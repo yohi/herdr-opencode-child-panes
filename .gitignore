@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+
+# Runtime / tool metadata
+.nexus/
+.omo/
+.justice/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
