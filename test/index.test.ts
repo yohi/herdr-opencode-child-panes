@@ -27,4 +27,30 @@ describe("herdrChildPanesPlugin", () => {
       process.env.HERDR_CHILD_PANES = originalToggle;
     }
   });
+
+  it("ignores session.created events without properties", async () => {
+    const originalHerdrEnv = process.env.HERDR_ENV;
+    const originalHerdrPaneId = process.env.HERDR_PANE_ID;
+    const originalToggle = process.env.HERDR_CHILD_PANES;
+
+    try {
+      process.env.HERDR_ENV = "1";
+      process.env.HERDR_PANE_ID = "pane-1";
+      process.env.HERDR_CHILD_PANES = "true";
+
+      const hooks = await herdrChildPanesPlugin({
+        serverUrl: new URL("http://localhost:3000"),
+      } as Parameters<typeof herdrChildPanesPlugin>[0]);
+      const malformedEvent = {
+        type: "session.created",
+        properties: undefined,
+      } as unknown as Parameters<NonNullable<typeof hooks.event>>[0]["event"];
+
+      await expect(hooks.event?.({ event: malformedEvent })).resolves.toBeUndefined();
+    } finally {
+      process.env.HERDR_ENV = originalHerdrEnv;
+      process.env.HERDR_PANE_ID = originalHerdrPaneId;
+      process.env.HERDR_CHILD_PANES = originalToggle;
+    }
+  });
 });

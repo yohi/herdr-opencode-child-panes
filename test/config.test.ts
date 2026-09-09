@@ -51,6 +51,7 @@ describe("parseConfig", () => {
 
   it("treats empty optional values as defaults", () => {
     const env = {
+      HERDR_CHILD_PANES: "",
       HERDR_CHILD_PANES_IDLE_MS: "",
       HERDR_CHILD_PANES_MAX: "",
       HERDR_CHILD_PANES_DIRECTION: "",

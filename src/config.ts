@@ -14,7 +14,8 @@ const VALID_DIRECTIONS: Direction[] = ["auto", "horizontal", "vertical"];
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   const normalized = value.trim().toLowerCase();
-  if (normalized === "" || normalized === "0" || normalized === "false" || normalized === "no") {
+  if (normalized === "") return fallback;
+  if (normalized === "0" || normalized === "false" || normalized === "no") {
     return false;
   }
   if (normalized === "1" || normalized === "true" || normalized === "yes") {

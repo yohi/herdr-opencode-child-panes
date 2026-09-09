@@ -50,8 +50,8 @@ export const herdrChildPanesPlugin: Plugin = async ({ serverUrl }) => {
     event: async ({ event }) => {
       if (event.type !== "session.created") return;
 
-      const session = event.properties.info;
-      if (!session.parentID) return;
+      const session = event.properties?.info;
+      if (!session?.parentID) return;
 
       logger.debug("Child session created", {
         sessionID: session.id,
