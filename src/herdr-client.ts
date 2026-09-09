@@ -42,7 +42,7 @@ function classifyError(error: unknown): { readonly code: string } {
 
 function subcommandName(argv: readonly string[]): string {
   if (argv.length >= 3) {
-    return `${argv[1]} ${argv[2]}`;
+    return `${argv[0]} ${argv[1]}`;
   }
   return argv[1] ?? "herdr";
 }

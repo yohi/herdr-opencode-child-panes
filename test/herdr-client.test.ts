@@ -86,6 +86,17 @@ describe("createHerdrClient", () => {
       const call = vi.mocked(logger.warn).mock.calls[0];
       expect(JSON.stringify(call)).not.toContain("secret-token");
     });
+
+    it("logs the pane namespace and subcommand without runtime arguments", async () => {
+      mockRunnerError(1);
+      const logger = createMockLogger();
+      const client = createHerdrClient({ runner: mockRunner, logger });
+
+      await client.getPane("pane-1");
+
+      const call = vi.mocked(logger.warn).mock.calls[0];
+      expect(call?.[0]).toBe("Herdr pane get command failed");
+    });
   });
 
   describe("getPaneLayout", () => {
