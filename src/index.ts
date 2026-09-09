@@ -4,8 +4,11 @@ import { createLogger } from "./logger.js";
 import type { RuntimePrerequisites } from "./types.js";
 
 export type { HerdrChildPanesConfig, Direction, RuntimePrerequisites } from "./types.js";
+export type { PaneInfo, PaneLayout, SplitPaneInput, HerdrClient } from "./types.js";
 export { parseConfig, DEFAULT_CONFIG } from "./config.js";
 export { createLogger } from "./logger.js";
+export { createHerdrClient } from "./herdr-client.js";
+export type { CreateHerdrClientOptions } from "./herdr-client.js";
 
 function checkPrerequisites(serverUrl: URL | undefined): RuntimePrerequisites {
   const herdrEnv = Boolean(process.env.HERDR_ENV);

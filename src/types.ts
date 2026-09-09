@@ -34,3 +34,58 @@ export interface RuntimePrerequisites {
   /** HERDR_CHILD_PANES must not be explicitly disabled. */
   notExplicitlyDisabled: boolean;
 }
+
+/**
+ * Opaque Herdr pane identifier.
+ */
+export type PaneId = Brand<string, "PaneId">;
+
+/**
+ * Minimal pane information returned by `herdr pane get`.
+ */
+export interface PaneInfo {
+  readonly id: string;
+}
+
+/**
+ * A child entry in a pane layout response.
+ */
+export interface PaneLayoutChild {
+  readonly id: string;
+  readonly direction?: Direction;
+}
+
+/**
+ * Pane layout information returned by `herdr pane layout`.
+ */
+export interface PaneLayout {
+  readonly paneId: string;
+  readonly direction?: Direction;
+  readonly children?: readonly PaneLayoutChild[];
+}
+
+/**
+ * Input for splitting an existing pane.
+ */
+export interface SplitPaneInput {
+  readonly paneId: string;
+  readonly direction?: Direction;
+  readonly command?: string;
+}
+
+/**
+ * Adapter around the Herdr CLI.
+ */
+export interface HerdrClient {
+  getPane(paneId: string): Promise<PaneInfo | null>;
+  getPaneLayout(paneId: string): Promise<PaneLayout | null>;
+  splitPane(input: SplitPaneInput): Promise<string | null>;
+  runInPane(paneId: string, command: string): Promise<boolean>;
+  closePane(paneId: string): Promise<boolean>;
+}
+
+/**
+ * Brand helper for distinct primitive types.
+ */
+declare const __brand: unique symbol;
+export type Brand<T, B> = T & { readonly [__brand]: B };
