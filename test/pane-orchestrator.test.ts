@@ -1,6 +1,6 @@
 import type { Event } from "@opencode-ai/sdk";
 import type { Mock } from "vitest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttachLauncher } from "../src/attach-launcher.js";
 import { createChildSessionRegistry } from "../src/child-session-registry.js";
 import type {
@@ -34,6 +34,16 @@ function activityEvent(sessionId: string): Event {
   return eventWith("message.part.updated", { part: { sessionID: sessionId } });
 }
 
+function deltaActivityEvent(sessionId: string): Event {
+  return eventWith("message.part.delta", {
+    sessionID: sessionId,
+    messageID: "msg_delta1",
+    partID: "part_delta1",
+    field: "text",
+    delta: "updated",
+  });
+}
+
 function statusEvent(sessionId: string, statusType: string): Event {
   return eventWith("session.status", { sessionID: sessionId, status: { type: statusType } });
 }
@@ -56,9 +66,14 @@ interface Fixture {
   readonly isOwnedChild: Mock<ChildOwnershipResolver["isOwnedChild"]>;
 }
 
+interface FixtureOptions {
+  readonly registry?: CreateChildSessionRegistryOptions;
+  readonly attachEnvironment?: Readonly<Record<string, string>>;
+}
+
 function createFixture(
   configOverrides: Partial<HerdrChildPanesConfig> = {},
-  registryOptions: CreateChildSessionRegistryOptions = {},
+  fixtureOptions: FixtureOptions = {},
 ): Fixture {
   const config: HerdrChildPanesConfig = {
     enabled: true,
@@ -69,7 +84,7 @@ function createFixture(
     debug: false,
     ...configOverrides,
   };
-  const registry = createChildSessionRegistry(registryOptions);
+  const registry = createChildSessionRegistry(fixtureOptions.registry);
   const herdrClient: HerdrClient = {
     getPane: vi.fn<HerdrClient["getPane"]>().mockResolvedValue(null),
     getPaneLayout: vi.fn<HerdrClient["getPaneLayout"]>().mockResolvedValue({
@@ -87,8 +102,9 @@ function createFixture(
       .fn<ChildOwnershipResolver["isTrackedDescendant"]>()
       .mockReturnValue(false),
   };
-  const attachLauncher: AttachLauncher = {
+  const attachLauncher = {
     attach: vi.fn<AttachLauncher["attach"]>().mockResolvedValue(true),
+    environment: fixtureOptions.attachEnvironment ?? {},
   };
   const logger = {
     debug: vi.fn(),
@@ -162,6 +178,38 @@ describe("createPaneOrchestrator", () => {
       state: "attached",
       paneId: NEW_PANE_ID,
     });
+  });
+
+  it("passes auth environment separately when creating the child pane", async () => {
+    const fixture = createFixture(
+      { direction: "right" },
+      {
+        attachEnvironment: {
+          OPENCODE_SERVER_PASSWORD: "s3cret-password",
+          OPENCODE_SERVER_USERNAME: "s3cret-user",
+        },
+      },
+    );
+    await attachChild(fixture);
+
+    expect(fixture.splitPane).toHaveBeenCalledWith({
+      paneId: CALLER_PANE_ID,
+      direction: "right",
+      noFocus: true,
+      env: {
+        OPENCODE_SERVER_PASSWORD: "s3cret-password",
+        OPENCODE_SERVER_USERNAME: "s3cret-user",
+      },
+    });
+  });
+
+  it("splits on direct message.part.delta activity", async () => {
+    const fixture = createFixture();
+    await registerOwnedChild(fixture);
+
+    await fixture.orchestrator.handleEvent(deltaActivityEvent(CHILD_ID));
+
+    expect(fixture.splitPane).toHaveBeenCalledTimes(1);
   });
 
   it("passes the configured direction and skips the layout probe", async () => {
@@ -285,6 +333,36 @@ describe("createPaneOrchestrator", () => {
     await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
 
     expect(fixture.closePane).not.toHaveBeenCalled();
+    expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+  });
+
+  it("closes a pane created after the session is deleted while spawning", async () => {
+    const fixture = createFixture();
+    await registerOwnedChild(fixture);
+
+    let releaseLayout:
+      | ((layout: { paneId: string; width: number; height: number }) => void)
+      | undefined;
+    const layoutStarted = new Promise<void>((resolve) => {
+      fixture.getPaneLayout.mockImplementationOnce(
+        () =>
+          new Promise((resolveLayout) => {
+            releaseLayout = resolveLayout;
+            resolve();
+          }),
+      );
+    });
+
+    const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+    await layoutStarted;
+
+    await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+
+    expect(fixture.registry.get(CHILD_ID)?.state).toBe("closing");
+    releaseLayout?.({ paneId: CALLER_PANE_ID, width: 200, height: 50 });
+    await spawning;
+
+    expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
     expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
   });
 
@@ -501,8 +579,14 @@ describe("createPaneOrchestrator", () => {
 
     // A later close still goes through the queue normally.
     fixture.closePane.mockResolvedValue(true);
-    await fixture.orchestrator.handleEvent(deletedEvent("ses_unknown"));
+    const laterChildId = "ses_child_later";
+    await fixture.orchestrator.handleEvent(createdEvent(laterChildId, PARENT_ID));
+    await fixture.orchestrator.handleEvent(activityEvent(laterChildId));
+    fixture.closePane.mockClear();
+    await fixture.orchestrator.handleEvent(deletedEvent(laterChildId));
     expect(fixture.closePane).toHaveBeenCalledTimes(1);
+    expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+    expect(fixture.registry.get(laterChildId)?.state).toBe("closed");
   });
 
   it("rejects queued work gracefully after dispose", async () => {
@@ -584,7 +668,7 @@ describe("createPaneOrchestrator", () => {
       // The registry forgets the handle but never really cancels the timer,
       // simulating a stale fire after a resume.
       const neverCancel = vi.fn();
-      const fixture = createFixture({}, { clearTimeout: neverCancel });
+      const fixture = createFixture({}, { registry: { clearTimeout: neverCancel } });
       await attachChild(fixture);
       await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
       await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
@@ -752,6 +836,35 @@ describe("createPaneOrchestrator", () => {
       expect(fixture.closePane).not.toHaveBeenCalled();
       expect(fixture.attach).toHaveBeenCalledTimes(1);
       expect(fixture.registry.get("ses_childB")?.state).toBe("ignored");
+    });
+
+    it("counts an in-progress spawn reservation against maxPanes", async () => {
+      const fixture = createFixture({ maxPanes: 1, direction: "right" });
+      const childA = "ses_childA";
+      const childB = "ses_childB";
+      await fixture.orchestrator.handleEvent(createdEvent(childA, PARENT_ID));
+      await fixture.orchestrator.handleEvent(createdEvent(childB, PARENT_ID));
+
+      let releaseSplit: ((paneId: string | null) => void) | undefined;
+      fixture.splitPane.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseSplit = resolve;
+          }),
+      );
+
+      const firstSpawn = fixture.orchestrator.handleEvent(activityEvent(childA));
+      const secondSpawn = fixture.orchestrator.handleEvent(activityEvent(childB));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+      releaseSplit?.(NEW_PANE_ID);
+      await Promise.all([firstSpawn, secondSpawn]);
+
+      expect(fixture.registry.get(childB)).toMatchObject({
+        state: "ignored",
+        failureReason: "capacity_limit",
+      });
     });
   });
 });

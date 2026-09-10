@@ -9,7 +9,11 @@ import type { ChildOwnershipResolver } from "./ownership-resolver.js";
 import { sessionCreatedPropertiesSchema, sessionStatusPropertiesSchema } from "./schemas.js";
 import type { HerdrChildPanesConfig, HerdrClient } from "./types.js";
 
-const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>(["message.updated", "message.part.updated"]);
+const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>([
+  "message.updated",
+  "message.part.updated",
+  "message.part.delta",
+]);
 const ACTIVE_STATUS_TYPES = new Set<string>(["active", "working", "busy", "running", "streaming"]);
 
 /**
@@ -76,6 +80,8 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const logger = options.logger;
   const setTimeoutFn = options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
   const queue = createAsyncQueue();
+  const spawnReservations = new Set<string>();
+  let disposed = false;
 
   function delay(ms: number): Promise<void> {
     return new Promise((resolve) => {
@@ -89,6 +95,37 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     logger.warn("Child pane lifecycle failure", { sessionId, reason });
   }
 
+  function reserveSpawn(sessionId: string): boolean {
+    if (spawnReservations.has(sessionId)) {
+      return true;
+    }
+    const paneCount = registry
+      .listActive()
+      .filter((session) => session.paneId !== undefined).length;
+    if (paneCount + spawnReservations.size >= config.maxPanes) {
+      registry.setFailureReason(sessionId, "capacity_limit");
+      registry.transitionTo(sessionId, "ignored");
+      logger.warn("Child pane capacity reached", { sessionId });
+      return false;
+    }
+    spawnReservations.add(sessionId);
+    return true;
+  }
+
+  async function closeSpawnedPane(sessionId: string, childPaneId: string): Promise<void> {
+    registry.setPaneId(sessionId, childPaneId);
+    const closed = await herdrClient.closePane(childPaneId);
+    if (closed) {
+      registry.transitionTo(sessionId, "closed");
+      logger.info("Child pane closed after session deletion", {
+        sessionId,
+        paneId: childPaneId,
+      });
+      return;
+    }
+    fail(sessionId, "close_failed");
+  }
+
   /**
    * Split the caller pane, attach the child session, and record the new pane.
    * Runs inside the serialized queue; the `spawning` transition happened
@@ -98,9 +135,24 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   async function runSpawn(sessionId: string): Promise<void> {
     const layout = config.direction === "auto" ? await herdrClient.getPaneLayout(paneId) : null;
     const direction = resolvePaneLayoutDirection({ direction: config.direction, layout });
-    const newPaneId = await herdrClient.splitPane({ paneId, direction, noFocus: true });
+    const environment = attachLauncher.environment;
+    const newPaneId = await herdrClient.splitPane({
+      paneId,
+      direction,
+      noFocus: true,
+      ...(environment !== undefined && Object.keys(environment).length > 0
+        ? { env: environment }
+        : {}),
+    });
     if (newPaneId === null) {
       fail(sessionId, "split_failed");
+      return;
+    }
+
+    // Deletion can arrive while splitPane is in flight. The new pane is the
+    // only resource created by this operation, so close it without attaching.
+    if (registry.get(sessionId)?.state === "closing") {
+      await closeSpawnedPane(sessionId, newPaneId);
       return;
     }
 
@@ -118,56 +170,43 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
 
+    if (registry.get(sessionId)?.state === "closing") {
+      await closeSpawnedPane(sessionId, newPaneId);
+      return;
+    }
+
     registry.setPaneId(sessionId, newPaneId);
     registry.transitionTo(sessionId, "attached");
     logger.info("Child pane attached", { sessionId, paneId: newPaneId });
   }
 
   /**
-   * Count the panes the bridge currently owns: sessions in an occupied
-   * state that carry a recorded pane. Closed, ignored and failed sessions
-   * release capacity, and because panes are only created on the serialized
-   * spawn path below, no in-flight pane can escape this count.
-   */
-  function countBridgeOwnedPanes(): number {
-    let count = 0;
-    for (const state of ["attached", "idle_pending"] as const) {
-      for (const session of registry.listByState(state)) {
-        if (session.paneId !== undefined) {
-          count += 1;
-        }
-      }
-    }
-    return count;
-  }
-
-  /**
-   * Claim the session for a spawn and queue the Herdr work. The synchronous
-   * `spawning` transition is the idempotency gate: concurrent activity events
-   * observe it and skip, so at most one split is ever queued per session.
+   * Claim the session before enqueueing the Herdr work. The synchronous
+   * `spawning` transition is the idempotency gate, while the reservation
+   * prevents concurrent children from exceeding the pane limit.
    */
   function enqueueSpawn(session: ChildSession): Promise<void> {
+    if (!reserveSpawn(session.sessionId)) {
+      return Promise.resolve();
+    }
+    if (!registry.transitionTo(session.sessionId, "spawning")) {
+      spawnReservations.delete(session.sessionId);
+      return Promise.resolve();
+    }
+
     return queue
       .enqueue(async () => {
         const current = registry.get(session.sessionId);
-        if (!current || current.state !== "waiting_activity") {
-          return;
-        }
-        // Capacity is checked on the serialized spawn path, so concurrent
-        // activity events cannot oversubscribe the caller pane.
-        if (countBridgeOwnedPanes() >= config.maxPanes) {
-          registry.setFailureReason(current.sessionId, "capacity_limit");
-          registry.transitionTo(current.sessionId, "ignored");
-          logger.info("Child pane skipped: capacity limit reached", {
-            sessionId: current.sessionId,
-            maxPanes: config.maxPanes,
-          });
-          return;
-        }
-        if (!registry.transitionTo(current.sessionId, "spawning")) {
+        if (!current || current.state !== "spawning") {
+          if (current?.state === "closing" && current.paneId === undefined) {
+            registry.transitionTo(current.sessionId, "closed");
+          }
           return;
         }
         await runSpawn(current.sessionId);
+      })
+      .finally(() => {
+        spawnReservations.delete(session.sessionId);
       })
       .catch((error: unknown) => {
         logger.error("Unhandled error while spawning child pane", {
@@ -175,7 +214,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
           error,
         });
         const current = registry.get(session.sessionId);
-        if (current?.state === "spawning") {
+        if (current?.state === "spawning" || current?.state === "closing") {
           fail(current.sessionId, "spawn_failed");
         }
       });
@@ -241,8 +280,12 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   function enqueueClose(session: ChildSession): Promise<void> {
     const childPaneId = session.paneId;
     if (childPaneId === undefined || childPaneId === paneId) {
-      // Nothing to clean up, or the only known pane is the caller pane itself.
-      registry.transitionTo(session.sessionId, "closed");
+      // A spawning session may report a pane after deletion. Leave it closing
+      // until the queued spawn observes the state and cleans up that pane.
+      if (session.state !== "spawning") {
+        // Nothing to clean up, or the only known pane is the caller pane itself.
+        registry.transitionTo(session.sessionId, "closed");
+      }
       return Promise.resolve();
     }
     return enqueueCloseTask(session, childPaneId, 0);
@@ -405,7 +448,11 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   }
 
   async function handleEvent(event: Event): Promise<void> {
-    switch (event.type) {
+    if (disposed) {
+      return;
+    }
+    const eventType: string = event.type;
+    switch (eventType) {
       case "session.created":
         await handleSessionCreated(event);
         return;
@@ -420,6 +467,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
         return;
       case "message.updated":
       case "message.part.updated":
+      case "message.part.delta":
         await handleActivity(event);
         return;
       default:
@@ -431,6 +479,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   return {
     handleEvent,
     dispose: async () => {
+      disposed = true;
       // Cancel idle timers without force-closing attached panes, then reject
       // any newly queued pane work.
       registry.clearAllTimers();

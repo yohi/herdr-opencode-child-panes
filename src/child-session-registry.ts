@@ -83,6 +83,10 @@ export function createChildSessionRegistry(
     },
 
     setTimer(sessionId: string, timer: SessionTimer): void {
+      const previousTimer = timers.get(sessionId);
+      if (previousTimer !== undefined) {
+        clearTimeoutFn(previousTimer);
+      }
       timers.set(sessionId, timer);
     },
 

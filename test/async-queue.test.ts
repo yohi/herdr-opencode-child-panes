@@ -55,17 +55,24 @@ describe("createAsyncQueue", () => {
     expect(followingResult).toBe("after");
   });
 
-  it("propagates the original rejection even when the task fails synchronously", async () => {
+  it("propagates synchronous task failures and runs the following task", async () => {
     // Given
     const queue = createAsyncQueue();
+    const ran: boolean[] = [];
 
     // When
-    const failing = queue.enqueue(async () => {
+    const failing = queue.enqueue(() => {
       throw new TypeError("sync-ish failure");
+    });
+    const following = queue.enqueue(async () => {
+      ran.push(true);
+      return "after";
     });
 
     // Then
     await expect(failing).rejects.toThrow(TypeError);
+    await expect(following).resolves.toBe("after");
+    expect(ran).toEqual([true]);
   });
 
   it("rejects new tasks gracefully after dispose", async () => {
