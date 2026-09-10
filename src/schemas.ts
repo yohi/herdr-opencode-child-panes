@@ -61,6 +61,14 @@ export const messagePartUpdatedPropertiesSchema = z.object({
   }),
 });
 
+export const messagePartDeltaPropertiesSchema = z.object({
+  sessionID: z.string().min(1),
+  messageID: z.string().min(1),
+  partID: z.string().min(1),
+  field: z.string().min(1),
+  delta: z.string(),
+});
+
 export type AgentSessionSchemaOutput = z.infer<typeof agentSessionSchema>;
 
 export type DirectionSchemaOutput = z.infer<typeof directionSchema>;

@@ -52,9 +52,13 @@ describe("resolveSessionId", () => {
     expect(resolveSessionId(event)).toBe("ses_part1");
   });
 
-  it("resolves defensive message.part.delta events from properties.part.sessionID", () => {
+  it("resolves defensive message.part.delta events from direct properties", () => {
     const event = eventWith("message.part.delta", {
-      part: { sessionID: "ses_delta1" },
+      sessionID: "ses_delta1",
+      messageID: "msg_delta1",
+      partID: "part_delta1",
+      field: "text",
+      delta: "updated",
     });
 
     expect(resolveSessionId(event)).toBe("ses_delta1");
