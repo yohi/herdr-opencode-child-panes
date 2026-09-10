@@ -11,7 +11,7 @@ describe("parseConfig", () => {
       HERDR_CHILD_PANES: "false",
       HERDR_CHILD_PANES_IDLE_MS: "5000",
       HERDR_CHILD_PANES_MAX: "2",
-      HERDR_CHILD_PANES_DIRECTION: "right",
+      HERDR_CHILD_PANES_DIRECTION: "vertical",
       HERDR_CHILD_PANES_DEBUG: "true",
     };
 
@@ -19,7 +19,7 @@ describe("parseConfig", () => {
       enabled: false,
       idleGraceMs: 5000,
       maxPanes: 2,
-      direction: "right",
+      direction: "vertical",
       closeRetries: 3,
       debug: true,
     });
