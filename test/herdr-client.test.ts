@@ -10,7 +10,7 @@ function mockRunnerStdout(stdout: string): void {
 }
 
 function mockRunnerError(code: string | number, message = "herdr failed"): void {
-  const error = Object.assign(new Error(message), { code: String(code) });
+  const error = Object.assign(new Error(message), { code });
   mockRunner.mockRejectedValue(error);
 }
 
@@ -69,6 +69,19 @@ describe("createHerdrClient", () => {
       const result = await client.getPane("pane-1");
 
       expect(result).toBeNull();
+    });
+
+    it("logs numeric process exit codes", async () => {
+      mockRunnerError(2);
+      const logger = createMockLogger();
+      const client = createHerdrClient({ runner: mockRunner, logger });
+
+      const result = await client.getPane("pane-1");
+
+      expect(result).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith("Herdr pane get command failed", {
+        code: "2",
+      });
     });
 
     it("returns null when stdout is not valid JSON", async () => {
