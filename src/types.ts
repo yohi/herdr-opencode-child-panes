@@ -1,7 +1,14 @@
+import type {
+  DirectionSchemaOutput,
+  PaneInfoSchemaOutput,
+  PaneLayoutChildSchemaOutput,
+  PaneLayoutSchemaOutput,
+} from "./schemas.js";
+
 /**
  * Herdr pane layout direction.
  */
-export type Direction = "auto" | "horizontal" | "vertical";
+export type Direction = DirectionSchemaOutput;
 
 /**
  * Parsed plugin configuration.
@@ -33,4 +40,47 @@ export interface RuntimePrerequisites {
   serverUrl: URL | undefined;
   /** HERDR_CHILD_PANES must not be explicitly disabled. */
   notExplicitlyDisabled: boolean;
+}
+
+/**
+ * Minimal pane information returned by `herdr pane get`.
+ */
+export type PaneInfo = Readonly<PaneInfoSchemaOutput>;
+
+/**
+ * A child entry in a pane layout response.
+ */
+export type PaneLayoutChild = Readonly<PaneLayoutChildSchemaOutput>;
+
+/**
+ * Pane layout information returned by `herdr pane layout`.
+ */
+export type PaneLayout = Readonly<
+  Omit<PaneLayoutSchemaOutput, "children"> & {
+    children?: readonly PaneLayoutChild[];
+  }
+>;
+
+/**
+ * Input for splitting an existing pane.
+ */
+export interface SplitPaneInput {
+  readonly paneId: string;
+  readonly direction?: Direction;
+  readonly command?: string;
+}
+
+/**
+ * Adapter around the Herdr CLI.
+ */
+export interface HerdrClient {
+  getPane(paneId: string): Promise<PaneInfo | null>;
+  getPaneLayout(paneId: string): Promise<PaneLayout | null>;
+  splitPane(input: SplitPaneInput): Promise<string | null>;
+  /**
+   * Execute a shell command in the target pane. The command is interpreted by
+   * the target shell, so callers must not pass untrusted command strings.
+   */
+  runInPane(paneId: string, command: string): Promise<boolean>;
+  closePane(paneId: string): Promise<boolean>;
 }
