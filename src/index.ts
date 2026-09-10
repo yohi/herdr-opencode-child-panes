@@ -1,5 +1,4 @@
 import type { Plugin } from "@opencode-ai/plugin";
-import { createAsyncQueue } from "./async-queue.js";
 import { createAttachLauncher } from "./attach-launcher.js";
 import { createChildSessionRegistry } from "./child-session-registry.js";
 import type { ChildSessionRegistry } from "./child-session.js";
