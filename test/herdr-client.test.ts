@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { type Runner, createHerdrClient } from "../src/herdr-client.js";
+import { type Runner, createHerdrClient, subcommandName } from "../src/herdr-client.js";
 import type { Logger } from "../src/logger.js";
 import type { Direction } from "../src/types.js";
 
@@ -22,6 +22,12 @@ function createMockLogger(): Logger {
     error: vi.fn(),
   };
 }
+
+describe("subcommandName", () => {
+  it("includes the namespace for a command with two argv entries", () => {
+    expect(subcommandName(["pane", "list"])).toBe("pane list");
+  });
+});
 
 describe("createHerdrClient", () => {
   beforeEach(() => {

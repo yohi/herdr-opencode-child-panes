@@ -40,8 +40,8 @@ function classifyError(error: unknown): { readonly code: string } {
   return { code: "UNKNOWN" };
 }
 
-function subcommandName(argv: readonly string[]): string {
-  if (argv.length >= 3) {
+export function subcommandName(argv: readonly string[]): string {
+  if (argv.length >= 2) {
     return `${argv[0]} ${argv[1]}`;
   }
   return argv[1] ?? "herdr";
