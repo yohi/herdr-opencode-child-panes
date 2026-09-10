@@ -84,3 +84,11 @@ export interface HerdrClient {
   runInPane(paneId: string, command: string): Promise<boolean>;
   closePane(paneId: string): Promise<boolean>;
 }
+
+export type {
+  ChildSession,
+  ChildSessionRegistry,
+  ChildSessionState,
+} from "./child-session.js";
+export type { ChildOwnershipResolver } from "./ownership-resolver.js";
+export type { ResolvedSessionId } from "./event-resolver.js";
