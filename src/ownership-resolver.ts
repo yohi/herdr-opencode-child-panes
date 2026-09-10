@@ -25,7 +25,7 @@ export function createChildOwnershipResolver(
 
       const parent = registry.get(input.parentId);
       if (parent) {
-        return parent.state !== "ignored" && parent.state !== "failed";
+        return parent.state !== "ignored" && parent.state !== "failed" && parent.state !== "closed";
       }
 
       const { rootSessionId } = await rootSessionResolver.resolve();

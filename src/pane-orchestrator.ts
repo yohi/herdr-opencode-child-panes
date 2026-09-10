@@ -8,7 +8,11 @@ import type { ChildOwnershipResolver } from "./ownership-resolver.js";
 import { sessionCreatedPropertiesSchema, sessionStatusPropertiesSchema } from "./schemas.js";
 import type { HerdrChildPanesConfig, HerdrClient } from "./types.js";
 
-const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>(["message.updated", "message.part.updated"]);
+const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>([
+  "message.updated",
+  "message.part.updated",
+  "message.part.delta",
+]);
 const ACTIVE_STATUS_TYPES = new Set<string>(["active", "working", "busy", "running", "streaming"]);
 
 /**
@@ -220,7 +224,8 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   }
 
   async function handleEvent(event: Event): Promise<void> {
-    switch (event.type) {
+    const eventType: string = event.type;
+    switch (eventType) {
       case "session.created":
         await handleSessionCreated(event);
         return;
@@ -235,6 +240,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
         return;
       case "message.updated":
       case "message.part.updated":
+      case "message.part.delta":
         await handleActivity(event);
         return;
       default:

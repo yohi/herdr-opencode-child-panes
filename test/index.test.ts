@@ -9,6 +9,26 @@ function asPluginEvent<T>(type: string, properties: T) {
   >[0]["event"];
 }
 
+function eventWith<T>(type: string, properties: T): { type: string; properties: T } {
+  return { type, properties };
+}
+
+function enablePlugin(): () => void {
+  const originalHerdrEnv = process.env.HERDR_ENV;
+  const originalHerdrPaneId = process.env.HERDR_PANE_ID;
+  const originalToggle = process.env.HERDR_CHILD_PANES;
+
+  process.env.HERDR_ENV = "1";
+  process.env.HERDR_PANE_ID = "pane-1";
+  process.env.HERDR_CHILD_PANES = "true";
+
+  return () => {
+    process.env.HERDR_ENV = originalHerdrEnv;
+    process.env.HERDR_PANE_ID = originalHerdrPaneId;
+    process.env.HERDR_CHILD_PANES = originalToggle;
+  };
+}
+
 describe("herdrChildPanesPlugin", () => {
   const ENV_KEYS = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_CHILD_PANES"] as const;
 
@@ -24,19 +44,6 @@ describe("herdrChildPanesPlugin", () => {
     }
   });
 
-  it("exports the plugin as the default and as a named export", () => {
-    expect(namedPlugin).toBe(herdrChildPanesPlugin);
-  });
-
-  it("returns empty hooks when runtime prerequisites are not satisfied", async () => {
-    process.env.HERDR_CHILD_PANES = "false";
-
-    const hooks = await herdrChildPanesPlugin({
-      serverUrl: undefined,
-    } as Parameters<typeof herdrChildPanesPlugin>[0]);
-
-    expect(hooks).toEqual({});
-  });
   it("exports the plugin as the default and as a named export", () => {
     expect(namedPlugin).toBe(herdrChildPanesPlugin);
   });
@@ -176,5 +183,79 @@ describe("herdrChildPanesPlugin", () => {
     });
 
     expect(harness.registry.has("ses_other")).toBe(false);
+  });
+
+  it("starts spawning a registered child on active session.status", async () => {
+    const restoreEnvironment = enablePlugin();
+
+    try {
+      let resolveSplit: ((paneId: string | null) => void) | undefined;
+      const splitPane = vi.fn<HerdrClient["splitPane"]>().mockImplementation(
+        () =>
+          new Promise<string | null>((resolve) => {
+            resolveSplit = resolve;
+          }),
+      );
+      const client = {
+        getPane: vi.fn<HerdrClient["getPane"]>().mockResolvedValue(null),
+        getPaneLayout: vi.fn<HerdrClient["getPaneLayout"]>().mockResolvedValue(null),
+        splitPane,
+        runInPane: vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true),
+        closePane: vi.fn<HerdrClient["closePane"]>().mockResolvedValue(true),
+      } satisfies HerdrClient;
+      const harness = await createTestPluginHooks({ herdrClient: client });
+      harness.registry.register("ses_child1", "ses_root123");
+
+      const eventPromise = harness.hooks.event?.({
+        event: eventWith("session.status", {
+          sessionID: "ses_child1",
+          status: { type: "busy" },
+        }),
+      });
+
+      await Promise.resolve();
+      expect(harness.registry.get("ses_child1")?.state).toBe("spawning");
+      resolveSplit?.("pane-2");
+      await eventPromise;
+      expect(harness.registry.get("ses_child1")?.state).toBe("attached");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("transitions an attached child to idle_pending on session.idle", async () => {
+    const restoreEnvironment = enablePlugin();
+
+    try {
+      const harness = await createTestPluginHooks();
+      harness.registry.register("ses_child1", "ses_root123");
+      harness.registry.transitionTo("ses_child1", "spawning");
+      harness.registry.transitionTo("ses_child1", "attached");
+
+      await harness.hooks.event?.({
+        event: eventWith("session.idle", { sessionID: "ses_child1" }),
+      });
+
+      expect(harness.registry.get("ses_child1")?.state).toBe("idle_pending");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("closes a registered child without an attached pane on session.deleted", async () => {
+    const restoreEnvironment = enablePlugin();
+
+    try {
+      const harness = await createTestPluginHooks();
+      harness.registry.register("ses_child1", "ses_root123");
+
+      await harness.hooks.event?.({
+        event: eventWith("session.deleted", { info: { id: "ses_child1" } }),
+      });
+
+      expect(harness.registry.get("ses_child1")?.state).toBe("closed");
+    } finally {
+      restoreEnvironment();
+    }
   });
 });

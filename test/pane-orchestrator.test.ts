@@ -31,6 +31,16 @@ function activityEvent(sessionId: string): Event {
   return eventWith("message.part.updated", { part: { sessionID: sessionId } });
 }
 
+function deltaActivityEvent(sessionId: string): Event {
+  return eventWith("message.part.delta", {
+    sessionID: sessionId,
+    messageID: "msg_delta1",
+    partID: "part_delta1",
+    field: "text",
+    delta: "updated",
+  });
+}
+
 function statusEvent(sessionId: string, statusType: string): Event {
   return eventWith("session.status", { sessionID: sessionId, status: { type: statusType } });
 }
@@ -156,6 +166,15 @@ describe("createPaneOrchestrator", () => {
       state: "attached",
       paneId: NEW_PANE_ID,
     });
+  });
+
+  it("splits on direct message.part.delta activity", async () => {
+    const fixture = createFixture();
+    await registerOwnedChild(fixture);
+
+    await fixture.orchestrator.handleEvent(deltaActivityEvent(CHILD_ID));
+
+    expect(fixture.splitPane).toHaveBeenCalledTimes(1);
   });
 
   it("passes the configured direction and skips the layout probe", async () => {
