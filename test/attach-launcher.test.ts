@@ -21,6 +21,7 @@ interface LoggerSpies {
 interface LauncherHarness {
   readonly runInPane: ReturnType<typeof vi.fn<HerdrClient["runInPane"]>>;
   readonly logger: LoggerSpies;
+  readonly launcher: ReturnType<typeof createAttachLauncher>;
   readonly launch: ReturnType<typeof createAttachLauncher>["attach"];
 }
 
@@ -48,7 +49,7 @@ function createHarness(
     error: vi.fn(),
   };
   const launcher = createAttachLauncher({ herdrClient: client, logger, env });
-  return { runInPane, logger, launch: launcher.attach };
+  return { runInPane, logger, launcher, launch: launcher.attach };
 }
 
 function secretEnv(): NodeJS.ProcessEnv {
@@ -110,6 +111,23 @@ describe("redactAttachCommand", () => {
 
     expect(redactAttachCommand(command)).toBe(command);
   });
+
+  it("redacts credentials containing shell quotes completely", () => {
+    const command = `OPENCODE_SERVER_PASSWORD=${quoteShell("secret'with-quote")} opencode attach`;
+
+    expect(redactAttachCommand(command)).toBe(
+      `OPENCODE_SERVER_PASSWORD=${quoteShell(REDACTED)} opencode attach`,
+    );
+  });
+
+  it("removes URL query parameters and fragments from the redacted command", () => {
+    const command =
+      "opencode attach 'https://example.test:8443/opencode?token=endpoint-secret#fragment-secret'";
+
+    expect(redactAttachCommand(command)).toBe(
+      "opencode attach 'https://example.test:8443/opencode'",
+    );
+  });
 });
 
 describe("createAttachLauncher", () => {
@@ -130,7 +148,7 @@ describe("createAttachLauncher", () => {
     );
   });
 
-  it("propagates auth env vars as command prefixes when present", async () => {
+  it("does not embed auth env vars in the command when present", async () => {
     const harness = createHarness(true, secretEnv());
 
     await harness.launch({
@@ -141,9 +159,37 @@ describe("createAttachLauncher", () => {
     });
 
     expect(lastCommand(harness)).toBe(
-      `OPENCODE_SERVER_PASSWORD=${quoteShell(SECRET_PASSWORD)} OPENCODE_SERVER_USERNAME=${quoteShell(
-        SECRET_USERNAME,
-      )} opencode attach 'https://example.test:8443/' --session 'ses_child1' --dir 'workspace/repo'`,
+      "opencode attach 'https://example.test:8443/' --session 'ses_child1' --dir 'workspace/repo'",
+    );
+    expect(lastCommand(harness)).not.toContain(SECRET_PASSWORD);
+    expect(lastCommand(harness)).not.toContain(SECRET_USERNAME);
+    expect(harness.launcher).toHaveProperty("environment", {
+      OPENCODE_SERVER_PASSWORD: SECRET_PASSWORD,
+      OPENCODE_SERVER_USERNAME: SECRET_USERNAME,
+    });
+  });
+
+  it("retains endpoint query parameters for execution but removes them from debug logs", async () => {
+    const harness = createHarness(true);
+
+    await harness.launch({
+      paneId: "pane-2",
+      sessionId: "ses_child1",
+      serverUrl: new URL(
+        "https://example.test:8443/opencode?token=endpoint-secret#fragment-secret",
+      ),
+      directory: "workspace/repo",
+    });
+
+    expect(lastCommand(harness)).toContain(
+      "'https://example.test:8443/opencode?token=endpoint-secret#fragment-secret'",
+    );
+    expect(harness.logger.debug).toHaveBeenCalledWith(
+      "Attaching OpenCode session to pane",
+      expect.objectContaining({
+        command:
+          "opencode attach 'https://example.test:8443/opencode' --session 'ses_child1' --dir 'workspace/repo'",
+      }),
     );
   });
 
@@ -181,7 +227,7 @@ describe("createAttachLauncher", () => {
     }
   });
 
-  it("logs the redacted command at debug level", async () => {
+  it("logs the command without authentication values at debug level", async () => {
     const harness = createHarness(true, secretEnv());
 
     await harness.launch({
@@ -196,7 +242,8 @@ describe("createAttachLauncher", () => {
       expect.objectContaining({
         paneId: "pane-2",
         sessionId: "ses_child1",
-        command: expect.stringContaining(`OPENCODE_SERVER_PASSWORD=${quoteShell(REDACTED)}`),
+        command:
+          "opencode attach 'https://example.test:8443/' --session 'ses_child1' --dir 'workspace/repo'",
       }),
     );
   });

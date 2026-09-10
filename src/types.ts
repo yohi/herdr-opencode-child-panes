@@ -66,6 +66,7 @@ export interface SplitPaneInput {
   readonly direction?: Direction;
   readonly command?: string;
   readonly noFocus?: boolean;
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**

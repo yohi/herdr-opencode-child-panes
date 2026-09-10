@@ -133,6 +133,11 @@ describe("createHerdrClient", () => {
                   focused: true,
                   rect: { x: 0, y: 0, width: 160, height: 48 },
                 },
+                {
+                  pane_id: "pane-2",
+                  focused: false,
+                  rect: { x: 80, y: 0, width: 80, height: 120 },
+                },
               ],
               splits: [
                 {
@@ -148,17 +153,17 @@ describe("createHerdrClient", () => {
       );
       const client = createHerdrClient({ runner: mockRunner });
 
-      const result = await client.getPaneLayout("pane-1");
+      const result = await client.getPaneLayout("pane-2");
 
       expect(result).toEqual({
-        paneId: "pane-1",
+        paneId: "pane-2",
         direction: "right",
-        width: 160,
-        height: 48,
+        width: 80,
+        height: 120,
       });
       expect(mockRunner).toHaveBeenCalledWith(
         "herdr",
-        ["pane", "layout", "--pane", "pane-1"],
+        ["pane", "layout", "--pane", "pane-2"],
         5000,
       );
     });
@@ -177,6 +182,31 @@ describe("createHerdrClient", () => {
       const client = createHerdrClient({ runner: mockRunner });
 
       const result = await client.getPaneLayout("pane-1");
+
+      expect(result).toBeNull();
+    });
+
+    it("returns null when the requested pane is absent from the layout", async () => {
+      mockRunnerStdout(
+        JSON.stringify({
+          result: {
+            layout: {
+              area: { width: 160, height: 48 },
+              panes: [
+                {
+                  pane_id: "pane-1",
+                  focused: true,
+                  rect: { x: 0, y: 0, width: 160, height: 48 },
+                },
+              ],
+              splits: [],
+            },
+          },
+        }),
+      );
+      const client = createHerdrClient({ runner: mockRunner });
+
+      const result = await client.getPaneLayout("pane-missing");
 
       expect(result).toBeNull();
     });
@@ -215,6 +245,37 @@ describe("createHerdrClient", () => {
           "--command",
           "vim",
           "--no-focus",
+        ],
+        5000,
+      );
+    });
+
+    it("passes environment values through the pane split API", async () => {
+      mockRunnerStdout(JSON.stringify({ id: "pane-2" }));
+      const client = createHerdrClient({ runner: mockRunner });
+
+      await client.splitPane({
+        paneId: "pane-1",
+        direction: "right",
+        env: {
+          OPENCODE_SERVER_PASSWORD: "s3cret-password",
+          OPENCODE_SERVER_USERNAME: "s3cret-user",
+        },
+      });
+
+      expect(mockRunner).toHaveBeenCalledWith(
+        "herdr",
+        [
+          "pane",
+          "split",
+          "--pane",
+          "pane-1",
+          "--direction",
+          "right",
+          "--env",
+          "OPENCODE_SERVER_PASSWORD=s3cret-password",
+          "--env",
+          "OPENCODE_SERVER_USERNAME=s3cret-user",
         ],
         5000,
       );

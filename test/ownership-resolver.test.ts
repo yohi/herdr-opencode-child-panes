@@ -122,6 +122,20 @@ describe("createChildOwnershipResolver", () => {
     expect(grandchildOwned).toBe(false);
   });
 
+  it("rejects a child of a tracked session that was closed", async () => {
+    const harness = createHarness(ROOT_SESSION_ID);
+    harness.registry.register("ses_closed", ROOT_SESSION_ID);
+    harness.registry.transitionTo("ses_closed", "closing");
+    harness.registry.transitionTo("ses_closed", "closed");
+
+    const childOwned = await harness.resolver.isOwnedChild({
+      sessionId: "ses_child_of_closed",
+      parentId: "ses_closed",
+    });
+
+    expect(childOwned).toBe(false);
+  });
+
   it("rejects every child while the root session is unavailable", async () => {
     const harness = createHarness(null);
 
