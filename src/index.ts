@@ -1,7 +1,12 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { createChildSessionRegistry } from "./child-session-registry.js";
+import type { ChildSessionRegistry } from "./child-session.js";
 import { parseConfig } from "./config.js";
+import { createHerdrClient } from "./herdr-client.js";
 import { createLogger } from "./logger.js";
-import type { RuntimePrerequisites } from "./types.js";
+import { createChildOwnershipResolver } from "./ownership-resolver.js";
+import { createRootSessionResolver } from "./root-session-resolver.js";
+import type { HerdrClient, RuntimePrerequisites } from "./types.js";
 
 export type { HerdrChildPanesConfig, Direction, RuntimePrerequisites } from "./types.js";
 export type { PaneInfo, PaneLayout, SplitPaneInput, HerdrClient } from "./types.js";
@@ -15,6 +20,16 @@ export type {
   ResolvedRootSession,
   RootSessionResolver,
 } from "./root-session-resolver.js";
+
+export type { ChildSession, ChildSessionRegistry, ChildSessionState } from "./child-session.js";
+export { createChildSessionRegistry } from "./child-session-registry.js";
+export { createChildOwnershipResolver } from "./ownership-resolver.js";
+export type {
+  ChildOwnershipResolver,
+  CreateChildOwnershipResolverOptions,
+} from "./ownership-resolver.js";
+export { resolveSessionId } from "./event-resolver.js";
+export type { ResolvedSessionId } from "./event-resolver.js";
 
 function checkPrerequisites(serverUrl: URL | undefined): RuntimePrerequisites {
   const herdrEnv = Boolean(process.env.HERDR_ENV);
@@ -37,7 +52,15 @@ function prerequisitesMet(prereqs: RuntimePrerequisites): boolean {
   );
 }
 
-export const herdrChildPanesPlugin: Plugin = async ({ serverUrl }) => {
+export interface PluginDependencies {
+  readonly registry?: ChildSessionRegistry;
+  readonly herdrClient?: HerdrClient;
+}
+
+export const herdrChildPanesPlugin: Plugin = async (
+  { serverUrl },
+  options?: PluginDependencies,
+) => {
   const config = parseConfig();
   const logger = createLogger(config.debug);
   const prereqs = checkPrerequisites(serverUrl);
@@ -55,19 +78,40 @@ export const herdrChildPanesPlugin: Plugin = async ({ serverUrl }) => {
     serverUrl: prereqs.serverUrl?.origin,
   });
 
+  const paneId = prereqs.herdrPaneId;
+  if (!paneId) {
+    logger.debug("Plugin disabled: missing pane id at wiring", {});
+    return {};
+  }
+  const herdrClient: HerdrClient = options?.herdrClient ?? createHerdrClient();
+  const registry: ChildSessionRegistry = options?.registry ?? createChildSessionRegistry();
+  const rootSessionResolver = createRootSessionResolver({
+    paneId,
+    herdrClient,
+  });
+  const ownershipResolver = createChildOwnershipResolver({ rootSessionResolver, registry });
+
   return {
     event: async ({ event }) => {
       if (event.type !== "session.created") return;
 
-      const session = event.properties?.info;
-      if (!session?.parentID) return;
+      const properties = event.properties;
+      const info = properties?.info;
+      if (!info?.id || !info.parentID) return;
 
-      logger.debug("Child session created", {
-        sessionID: session.id,
-        parentID: session.parentID,
-      });
-
-      // Pane creation will be implemented in a future iteration.
+      const sessionId = info.id;
+      const parentId = info.parentID;
+      const owned = await ownershipResolver.isOwnedChild({ sessionId, parentId });
+      if (!owned) {
+        logger.debug("Child session not owned", { sessionId, parentId });
+        return;
+      }
+      const registered = registry.register(sessionId, parentId);
+      if (!registered) {
+        logger.debug("Child session already registered", { sessionId, parentId });
+        return;
+      }
+      logger.info("Child session registered", { sessionId, parentId });
     },
   };
 };
