@@ -15,6 +15,8 @@ export type { HerdrChildPanesConfig, Direction, RuntimePrerequisites } from "./t
 export type { PaneInfo, PaneLayout, SplitPaneInput, HerdrClient } from "./types.js";
 export { parseConfig, DEFAULT_CONFIG } from "./config.js";
 export { createLogger } from "./logger.js";
+export { createAsyncQueue } from "./async-queue.js";
+export type { AsyncQueue } from "./async-queue.js";
 export { createHerdrClient } from "./herdr-client.js";
 export type { CreateHerdrClientOptions } from "./herdr-client.js";
 export { createRootSessionResolver } from "./root-session-resolver.js";

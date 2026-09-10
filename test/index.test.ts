@@ -173,7 +173,7 @@ describe("herdrChildPanesPlugin", () => {
       }),
     });
 
-    await Promise.resolve();
+    await vi.waitFor(() => expect(resolveSplit).toBeDefined());
     expect(harness.registry.get("ses_child1")?.state).toBe("spawning");
     resolveSplit?.("pane-2");
     await eventPromise;

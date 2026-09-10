@@ -1,4 +1,5 @@
 import type { Event } from "@opencode-ai/sdk";
+import { createAsyncQueue } from "./async-queue.js";
 import type { AttachLauncher } from "./attach-launcher.js";
 import type { ChildSession, ChildSessionRegistry } from "./child-session.js";
 import { resolvePaneLayoutDirection } from "./direction-policy.js";
@@ -16,9 +17,19 @@ const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>([
 const ACTIVE_STATUS_TYPES = new Set<string>(["active", "working", "busy", "running", "streaming"]);
 
 /**
+ * Backoff delays between close retries; the last value is reused when more
+ * retries are configured than there are entries.
+ */
+const CLOSE_RETRY_BACKOFF_MS: readonly number[] = [500, 1000, 2000];
+
+/**
  * Drives the child pane lifecycle from OpenCode events: registers owned child
  * sessions, splits the caller pane on the first meaningful activity, attaches
  * the child session into the new pane, and closes panes when sessions die.
+ *
+ * Pane splits and closes are serialized through an async queue so concurrent
+ * events cannot interleave Herdr mutations, and a failed mutation never
+ * blocks the mutations queued behind it.
  */
 export interface PaneOrchestrator {
   handleEvent(event: Event): Promise<void>;
@@ -44,12 +55,8 @@ export interface CreatePaneOrchestratorOptions {
   readonly attachLauncher: AttachLauncher;
   /** Structured logger. */
   readonly logger: Logger;
-  /** Clock source; wired into PR3 idle timers. */
-  readonly now?: () => number;
-  /** Timer creation; wired into PR3 idle timers. */
+  /** Timer creation for the idle grace period and close-retry backoff. */
   readonly setTimeout?: typeof globalThis.setTimeout;
-  /** Timer cancellation; wired into PR3 idle timers. */
-  readonly clearTimeout?: typeof globalThis.clearTimeout;
 }
 
 function isActiveStatus(status: unknown): boolean {
@@ -71,7 +78,16 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const registry = options.registry;
   const attachLauncher = options.attachLauncher;
   const logger = options.logger;
+  const setTimeoutFn = options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
+  const queue = createAsyncQueue();
   const spawnReservations = new Set<string>();
+  let disposed = false;
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeoutFn(resolve, ms);
+    });
+  }
 
   function fail(sessionId: string, reason: string): void {
     registry.setFailureReason(sessionId, reason);
@@ -112,66 +128,167 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
 
   /**
    * Split the caller pane, attach the child session, and record the new pane.
-   * The `spawning` transition happens synchronously before any `await`, so a
-   * second activity event racing the split observes `spawning` and skips.
+   * Runs inside the serialized queue; the `spawning` transition happened
+   * synchronously at enqueue time, so this only mutates Herdr when the
+   * session is still claimed by this spawn.
    */
-  async function spawnChild(session: ChildSession): Promise<void> {
-    if (!reserveSpawn(session.sessionId)) {
+  async function runSpawn(sessionId: string): Promise<void> {
+    const layout = config.direction === "auto" ? await herdrClient.getPaneLayout(paneId) : null;
+    const direction = resolvePaneLayoutDirection({ direction: config.direction, layout });
+    const environment = attachLauncher.environment;
+    const newPaneId = await herdrClient.splitPane({
+      paneId,
+      direction,
+      noFocus: true,
+      ...(environment !== undefined && Object.keys(environment).length > 0
+        ? { env: environment }
+        : {}),
+    });
+    if (newPaneId === null) {
+      fail(sessionId, "split_failed");
       return;
     }
 
-    try {
-      const transitioned = registry.transitionTo(session.sessionId, "spawning");
-      if (!transitioned) {
-        return;
-      }
-
-      const layout = config.direction === "auto" ? await herdrClient.getPaneLayout(paneId) : null;
-      const direction = resolvePaneLayoutDirection({ direction: config.direction, layout });
-      const environment = attachLauncher.environment;
-      const newPaneId = await herdrClient.splitPane({
-        paneId,
-        direction,
-        noFocus: true,
-        ...(environment !== undefined && Object.keys(environment).length > 0
-          ? { env: environment }
-          : {}),
-      });
-      if (newPaneId === null) {
-        fail(session.sessionId, "split_failed");
-        return;
-      }
-
-      if (registry.get(session.sessionId)?.state === "closing") {
-        await closeSpawnedPane(session.sessionId, newPaneId);
-        return;
-      }
-
-      const attached = await attachLauncher.attach({
-        paneId: newPaneId,
-        sessionId: session.sessionId,
-        serverUrl,
-        directory,
-      });
-      if (!attached) {
-        // Only the freshly created pane may be rolled back; the child session
-        // itself is never touched.
-        await herdrClient.closePane(newPaneId);
-        fail(session.sessionId, "attach_failed");
-        return;
-      }
-
-      if (registry.get(session.sessionId)?.state === "closing") {
-        await closeSpawnedPane(session.sessionId, newPaneId);
-        return;
-      }
-
-      registry.setPaneId(session.sessionId, newPaneId);
-      registry.transitionTo(session.sessionId, "attached");
-      logger.info("Child pane attached", { sessionId: session.sessionId, paneId: newPaneId });
-    } finally {
-      spawnReservations.delete(session.sessionId);
+    // Deletion can arrive while splitPane is in flight. The new pane is the
+    // only resource created by this operation, so close it without attaching.
+    if (registry.get(sessionId)?.state === "closing") {
+      await closeSpawnedPane(sessionId, newPaneId);
+      return;
     }
+
+    const attached = await attachLauncher.attach({
+      paneId: newPaneId,
+      sessionId,
+      serverUrl,
+      directory,
+    });
+    if (!attached) {
+      // Only the freshly created pane may be rolled back; the child session
+      // itself is never touched.
+      await herdrClient.closePane(newPaneId);
+      fail(sessionId, "attach_failed");
+      return;
+    }
+
+    if (registry.get(sessionId)?.state === "closing") {
+      await closeSpawnedPane(sessionId, newPaneId);
+      return;
+    }
+
+    registry.setPaneId(sessionId, newPaneId);
+    registry.transitionTo(sessionId, "attached");
+    logger.info("Child pane attached", { sessionId, paneId: newPaneId });
+  }
+
+  /**
+   * Claim the session before enqueueing the Herdr work. The synchronous
+   * `spawning` transition is the idempotency gate, while the reservation
+   * prevents concurrent children from exceeding the pane limit.
+   */
+  function enqueueSpawn(session: ChildSession): Promise<void> {
+    if (!reserveSpawn(session.sessionId)) {
+      return Promise.resolve();
+    }
+    if (!registry.transitionTo(session.sessionId, "spawning")) {
+      spawnReservations.delete(session.sessionId);
+      return Promise.resolve();
+    }
+
+    return queue
+      .enqueue(async () => {
+        const current = registry.get(session.sessionId);
+        if (!current || current.state !== "spawning") {
+          if (current?.state === "closing" && current.paneId === undefined) {
+            registry.transitionTo(current.sessionId, "closed");
+          }
+          return;
+        }
+        await runSpawn(current.sessionId);
+      })
+      .finally(() => {
+        spawnReservations.delete(session.sessionId);
+      })
+      .catch((error: unknown) => {
+        logger.error("Unhandled error while spawning child pane", {
+          sessionId: session.sessionId,
+          error,
+        });
+        const current = registry.get(session.sessionId);
+        if (current?.state === "spawning" || current?.state === "closing") {
+          fail(current.sessionId, "spawn_failed");
+        }
+      });
+  }
+
+  /**
+   * Close an already-`closing` session's pane, retrying up to `retries` times
+   * with exponential-ish backoff. Each attempt re-checks the lifecycle state
+   * so a close taken over by another path stops without touching Herdr again.
+   */
+  async function closePaneUntilClosed(
+    sessionId: string,
+    childPaneId: string,
+    retries: number,
+  ): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      const current = registry.get(sessionId);
+      if (!current || current.state !== "closing") {
+        return;
+      }
+      if (await herdrClient.closePane(childPaneId)) {
+        registry.transitionTo(sessionId, "closed");
+        logger.info("Child pane closed", { sessionId, paneId: childPaneId });
+        return;
+      }
+      if (attempt >= retries) {
+        fail(sessionId, "close_failed");
+        return;
+      }
+      await delay(CLOSE_RETRY_BACKOFF_MS[Math.min(attempt, CLOSE_RETRY_BACKOFF_MS.length - 1)]);
+    }
+  }
+
+  /**
+   * Queue the Herdr close for a `closing` session that owns a child pane.
+   */
+  function enqueueCloseTask(
+    session: ChildSession,
+    childPaneId: string,
+    retries: number,
+  ): Promise<void> {
+    return queue
+      .enqueue(() => closePaneUntilClosed(session.sessionId, childPaneId, retries))
+      .catch((error: unknown) => {
+        logger.error("Unhandled error while closing child pane", {
+          sessionId: session.sessionId,
+          paneId: childPaneId,
+          error,
+        });
+        const current = registry.get(session.sessionId);
+        if (current?.state === "closing") {
+          fail(current.sessionId, "close_failed");
+        }
+      });
+  }
+
+  /**
+   * Queue the Herdr close for an already-`closing` session. Sessions without
+   * an owned pane transition straight to `closed` without touching Herdr.
+   * Delete-triggered closes are single-attempt; only the idle-timeout close
+   * retries.
+   */
+  function enqueueClose(session: ChildSession): Promise<void> {
+    const childPaneId = session.paneId;
+    if (childPaneId === undefined || childPaneId === paneId) {
+      // A spawning session may report a pane after deletion. Leave it closing
+      // until the queued spawn observes the state and cleans up that pane.
+      if (session.state !== "spawning") {
+        // Nothing to clean up, or the only known pane is the caller pane itself.
+        registry.transitionTo(session.sessionId, "closed");
+      }
+      return Promise.resolve();
+    }
+    return enqueueCloseTask(session, childPaneId, 0);
   }
 
   async function handleSessionCreated(event: Event): Promise<void> {
@@ -201,22 +318,39 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     logger.info("Child session registered", { sessionId, parentId });
   }
 
-  async function spawnIfWaiting(sessionId: string | undefined): Promise<void> {
+  function resumeFromIdlePending(sessionId: string): void {
+    registry.clearTimer(sessionId);
+    registry.transitionTo(sessionId, "attached");
+    logger.debug("Child session resumed from idle", { sessionId });
+  }
+
+  /**
+   * Route a work signal (message activity or an active status) to the session:
+   * waiting sessions get spawned, idle_pending sessions resume before the
+   * grace timer fires.
+   */
+  async function resumeOrSpawn(sessionId: string | undefined): Promise<void> {
     if (!sessionId) {
       return;
     }
     const session = registry.get(sessionId);
-    if (session?.state !== "waiting_activity") {
+    if (!session) {
       return;
     }
-    await spawnChild(session);
+    if (session.state === "waiting_activity") {
+      await enqueueSpawn(session);
+      return;
+    }
+    if (session.state === "idle_pending") {
+      resumeFromIdlePending(sessionId);
+    }
   }
 
   async function handleActivity(event: Event): Promise<void> {
     if (!MEANINGFUL_ACTIVITY_EVENTS.has(event.type)) {
       return;
     }
-    await spawnIfWaiting(resolveSessionId(event));
+    await resumeOrSpawn(resolveSessionId(event));
   }
 
   async function handleSessionStatus(event: Event): Promise<void> {
@@ -233,7 +367,44 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!isActiveStatus(parsed.data.status)) {
       return;
     }
-    await spawnIfWaiting(sessionId);
+    await resumeOrSpawn(sessionId);
+  }
+
+  /**
+   * Arm the one-shot grace timer for an idle_pending session. The callback
+   * re-checks the state, so a stale timer that fires after a resume (or a
+   * racing delete) is a harmless no-op.
+   */
+  function scheduleIdleTimer(sessionId: string): void {
+    const timer = setTimeoutFn(() => {
+      void closeAfterIdleGrace(sessionId);
+    }, config.idleGraceMs);
+    registry.setTimer(sessionId, timer);
+  }
+
+  /**
+   * Grace period elapsed: transition the session to `closing` and close its
+   * pane with bounded retries. `closing -> closed` on success,
+   * `closing -> failed(close_failed)` when every attempt fails.
+   */
+  function closeAfterIdleGrace(sessionId: string): void {
+    registry.clearTimer(sessionId);
+    const session = registry.get(sessionId);
+    if (!session || session.state !== "idle_pending") {
+      // Activity resumed or the session was deleted first; timer is stale.
+      logger.debug("Stale idle timer ignored", { sessionId });
+      return;
+    }
+    if (!registry.transitionTo(sessionId, "closing")) {
+      return;
+    }
+    const childPaneId = session.paneId;
+    if (childPaneId === undefined || childPaneId === paneId) {
+      // Nothing to clean up, or the only known pane is the caller pane itself.
+      registry.transitionTo(sessionId, "closed");
+      return;
+    }
+    void enqueueCloseTask(session, childPaneId, config.closeRetries);
   }
 
   async function handleSessionIdle(event: Event): Promise<void> {
@@ -242,12 +413,19 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
     const session = registry.get(sessionId);
-    // Only attached sessions go idle; duplicate idles are no-ops. Timer
-    // scheduling for the grace period lands in PR3.
-    if (session?.state !== "attached") {
+    // Only attached sessions go idle. The transition doubles as the
+    // idempotency gate, so duplicate idle events never arm a second timer.
+    if (!session || session.state !== "attached") {
       return;
     }
-    registry.transitionTo(sessionId, "idle_pending");
+    if (!registry.transitionTo(sessionId, "idle_pending")) {
+      return;
+    }
+    scheduleIdleTimer(sessionId);
+    logger.debug("Child session idle: close scheduled", {
+      sessionId,
+      graceMs: config.idleGraceMs,
+    });
   }
 
   async function handleSessionDeleted(event: Event): Promise<void> {
@@ -259,34 +437,20 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!session) {
       return;
     }
-    const wasSpawning = session.state === "spawning";
+    // Cancel a pending idle-close timer, if any.
+    registry.clearTimer(sessionId);
     // A rejected transition means the session is already closing/closed or
     // terminal, which keeps duplicate delete events idempotent.
     if (!registry.transitionTo(sessionId, "closing")) {
       return;
     }
-
-    const childPaneId = session.paneId;
-    if (childPaneId === undefined || childPaneId === paneId) {
-      // A spawning session has not reported its newly created pane yet. Leave
-      // it closing so spawnChild can close that pane after split completes.
-      if (!wasSpawning) {
-        // Nothing to clean up, or the only known pane is the caller pane itself.
-        registry.transitionTo(sessionId, "closed");
-      }
-      return;
-    }
-
-    const closed = await herdrClient.closePane(childPaneId);
-    if (closed) {
-      registry.transitionTo(sessionId, "closed");
-      logger.info("Child pane closed", { sessionId, paneId: childPaneId });
-      return;
-    }
-    fail(sessionId, "close_failed");
+    await enqueueClose(session);
   }
 
   async function handleEvent(event: Event): Promise<void> {
+    if (disposed) {
+      return;
+    }
     const eventType: string = event.type;
     switch (eventType) {
       case "session.created":
@@ -315,7 +479,11 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   return {
     handleEvent,
     dispose: async () => {
-      // Idle-timer teardown lands in PR3; nothing to release yet.
+      disposed = true;
+      // Cancel idle timers without force-closing attached panes, then reject
+      // any newly queued pane work.
+      registry.clearAllTimers();
+      queue.dispose();
     },
   };
 }
