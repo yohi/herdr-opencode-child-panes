@@ -3,44 +3,60 @@ import herdrChildPanesPlugin, { herdrChildPanesPlugin as namedPlugin } from "../
 import type { HerdrClient } from "../src/types.js";
 import { createTestPluginHooks } from "../test-support/plugin-harness.js";
 
+function asPluginEvent<T>(type: string, properties: T) {
+  return { type, properties } as unknown as Parameters<
+    NonNullable<Awaited<ReturnType<typeof createTestPluginHooks>>["hooks"]["event"]>
+  >[0]["event"];
+}
+
 describe("herdrChildPanesPlugin", () => {
+  const ENV_KEYS = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_CHILD_PANES"] as const;
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      delete process.env[key];
+    }
+  });
+
   it("exports the plugin as the default and as a named export", () => {
     expect(namedPlugin).toBe(herdrChildPanesPlugin);
   });
 
   it("returns empty hooks when runtime prerequisites are not satisfied", async () => {
-    const originalHerdrEnv = process.env.HERDR_ENV;
-    const originalHerdrPaneId = process.env.HERDR_PANE_ID;
-    const originalToggle = process.env.HERDR_CHILD_PANES;
+    process.env.HERDR_CHILD_PANES = "false";
 
-    try {
-      process.env.HERDR_ENV = undefined;
-      process.env.HERDR_PANE_ID = undefined;
-      process.env.HERDR_CHILD_PANES = "false";
+    const hooks = await herdrChildPanesPlugin({
+      serverUrl: undefined,
+    } as Parameters<typeof herdrChildPanesPlugin>[0]);
 
-      const hooks = await herdrChildPanesPlugin({
-        serverUrl: undefined,
-      } as Parameters<typeof herdrChildPanesPlugin>[0]);
+    expect(hooks).toEqual({});
+  });
+  it("exports the plugin as the default and as a named export", () => {
+    expect(namedPlugin).toBe(herdrChildPanesPlugin);
+  });
 
-      expect(hooks).toEqual({});
-    } finally {
-      process.env.HERDR_ENV = originalHerdrEnv;
-      process.env.HERDR_PANE_ID = originalHerdrPaneId;
-      process.env.HERDR_CHILD_PANES = originalToggle;
-    }
+  it("returns empty hooks when runtime prerequisites are not satisfied", async () => {
+    process.env.HERDR_CHILD_PANES = "false";
+
+    const hooks = await herdrChildPanesPlugin({
+      serverUrl: undefined,
+    } as Parameters<typeof herdrChildPanesPlugin>[0]);
+
+    expect(hooks).toEqual({});
   });
 
   it("logs only the server URL origin when the plugin activates", async () => {
-    const originalHerdrEnv = process.env.HERDR_ENV;
-    const originalHerdrPaneId = process.env.HERDR_PANE_ID;
-    const originalToggle = process.env.HERDR_CHILD_PANES;
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_PANE_ID = "pane-1";
 
     try {
-      process.env.HERDR_ENV = "1";
-      process.env.HERDR_PANE_ID = "pane-1";
-      process.env.HERDR_CHILD_PANES = "true";
-
       await herdrChildPanesPlugin({
         serverUrl: new URL("https://user:secret@example.test:8443/opencode?token=secret#fragment"),
       } as Parameters<typeof herdrChildPanesPlugin>[0]);
@@ -51,73 +67,114 @@ describe("herdrChildPanesPlugin", () => {
       });
     } finally {
       infoSpy.mockRestore();
-      process.env.HERDR_ENV = originalHerdrEnv;
-      process.env.HERDR_PANE_ID = originalHerdrPaneId;
-      process.env.HERDR_CHILD_PANES = originalToggle;
     }
   });
 
   it("ignores session.created events without properties", async () => {
-    const originalHerdrEnv = process.env.HERDR_ENV;
-    const originalHerdrPaneId = process.env.HERDR_PANE_ID;
-    const originalToggle = process.env.HERDR_CHILD_PANES;
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_PANE_ID = "pane-1";
 
-    try {
-      process.env.HERDR_ENV = "1";
-      process.env.HERDR_PANE_ID = "pane-1";
-      process.env.HERDR_CHILD_PANES = "true";
+    const hooks = await herdrChildPanesPlugin({
+      serverUrl: new URL("http://localhost:3000"),
+    } as Parameters<typeof herdrChildPanesPlugin>[0]);
+    const malformedEvent = {
+      type: "session.created",
+      properties: undefined,
+    } as unknown as Parameters<NonNullable<typeof hooks.event>>[0]["event"];
 
-      const hooks = await herdrChildPanesPlugin({
-        serverUrl: new URL("http://localhost:3000"),
-      } as Parameters<typeof herdrChildPanesPlugin>[0]);
-      const malformedEvent = {
-        type: "session.created",
-        properties: undefined,
-      } as unknown as Parameters<NonNullable<typeof hooks.event>>[0]["event"];
-
-      await expect(hooks.event?.({ event: malformedEvent })).resolves.toBeUndefined();
-    } finally {
-      process.env.HERDR_ENV = originalHerdrEnv;
-      process.env.HERDR_PANE_ID = originalHerdrPaneId;
-      process.env.HERDR_CHILD_PANES = originalToggle;
-    }
+    await expect(hooks.event?.({ event: malformedEvent })).resolves.toBeUndefined();
   });
 
   it("registers an owned direct child session created under the root", async () => {
-    const originalHerdrEnv = process.env.HERDR_ENV;
-    const originalHerdrPaneId = process.env.HERDR_PANE_ID;
-    const originalToggle = process.env.HERDR_CHILD_PANES;
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_PANE_ID = "pane-1";
 
-    try {
-      process.env.HERDR_ENV = "1";
-      process.env.HERDR_PANE_ID = "pane-1";
-      process.env.HERDR_CHILD_PANES = "true";
+    const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
+      id: "pane-1",
+      agent_session: { agent: "opencode", session_id: "ses_root123" },
+    });
+    const client = { getPane } as unknown as HerdrClient;
+    const harness = await createTestPluginHooks({ herdrClient: client });
 
-      const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
-        id: "pane-1",
-        agent_session: { agent: "opencode", session_id: "ses_root123" },
-      });
-      const client = { getPane } as unknown as HerdrClient;
-      const harness = await createTestPluginHooks({ herdrClient: client });
+    await harness.hooks.event?.({
+      event: asPluginEvent("session.created", {
+        info: { id: "ses_child1", parentID: "ses_root123" },
+      }),
+    });
 
-      const event = {
-        type: "session.created",
-        properties: { info: { id: "ses_child1", parentID: "ses_root123" } },
-      } as unknown as Parameters<NonNullable<typeof hooks.event>>[0]["event"];
+    expect(harness.registry.get("ses_child1")).toEqual({
+      sessionId: "ses_child1",
+      parentId: "ses_root123",
+      state: "waiting_activity",
+      createdAt: expect.any(Number),
+      updatedAt: expect.any(Number),
+    });
+  });
 
-      await harness.hooks.event?.({ event });
+  it("runs the full child pane lifecycle from creation to close", async () => {
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_PANE_ID = "pane-1";
 
-      expect(harness.registry.get("ses_child1")).toEqual({
-        sessionId: "ses_child1",
-        parentId: "ses_root123",
-        state: "waiting_activity",
-        createdAt: expect.any(Number),
-        updatedAt: expect.any(Number),
-      });
-    } finally {
-      process.env.HERDR_ENV = originalHerdrEnv;
-      process.env.HERDR_PANE_ID = originalHerdrPaneId;
-      process.env.HERDR_CHILD_PANES = originalToggle;
-    }
+    const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
+      id: "pane-1",
+      agent_session: { agent: "opencode", session_id: "ses_root123" },
+    });
+    const getPaneLayout = vi.fn<HerdrClient["getPaneLayout"]>().mockResolvedValue({
+      paneId: "pane-1",
+      width: 200,
+      height: 50,
+    });
+    const splitPane = vi.fn<HerdrClient["splitPane"]>().mockResolvedValue("pane-2");
+    const runInPane = vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true);
+    const closePane = vi.fn<HerdrClient["closePane"]>().mockResolvedValue(true);
+    const client = { getPane, getPaneLayout, splitPane, runInPane, closePane } as HerdrClient;
+    const harness = await createTestPluginHooks({ herdrClient: client });
+
+    await harness.hooks.event?.({
+      event: asPluginEvent("session.created", {
+        info: { id: "ses_child1", parentID: "ses_root123" },
+      }),
+    });
+    expect(harness.registry.get("ses_child1")?.state).toBe("waiting_activity");
+
+    await harness.hooks.event?.({
+      event: asPluginEvent("message.part.updated", { part: { sessionID: "ses_child1" } }),
+    });
+    expect(splitPane).toHaveBeenCalledWith({ paneId: "pane-1", direction: "right", noFocus: true });
+    expect(harness.registry.get("ses_child1")).toMatchObject({
+      state: "attached",
+      paneId: "pane-2",
+    });
+
+    await harness.hooks.event?.({
+      event: asPluginEvent("session.idle", { sessionID: "ses_child1" }),
+    });
+    expect(harness.registry.get("ses_child1")?.state).toBe("idle_pending");
+
+    await harness.hooks.event?.({
+      event: asPluginEvent("session.deleted", { info: { id: "ses_child1" } }),
+    });
+    expect(closePane).toHaveBeenCalledWith("pane-2");
+    expect(harness.registry.get("ses_child1")?.state).toBe("closed");
+  });
+
+  it("ignores a child session owned by another pane", async () => {
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_PANE_ID = "pane-1";
+
+    const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
+      id: "pane-1",
+      agent_session: { agent: "opencode", session_id: "ses_root123" },
+    });
+    const client = { getPane } as unknown as HerdrClient;
+    const harness = await createTestPluginHooks({ herdrClient: client });
+
+    await harness.hooks.event?.({
+      event: asPluginEvent("session.created", {
+        info: { id: "ses_other", parentID: "ses_unrelated" },
+      }),
+    });
+
+    expect(harness.registry.has("ses_other")).toBe(false);
   });
 });
