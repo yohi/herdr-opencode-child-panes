@@ -2,10 +2,12 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { createChildSessionRegistry } from "./child-session-registry.js";
 import type { ChildSessionRegistry } from "./child-session.js";
 import { parseConfig } from "./config.js";
+import { resolveSessionId } from "./event-resolver.js";
 import { createHerdrClient } from "./herdr-client.js";
 import { createLogger } from "./logger.js";
 import { createChildOwnershipResolver } from "./ownership-resolver.js";
 import { createRootSessionResolver } from "./root-session-resolver.js";
+import { sessionCreatedPropertiesSchema, sessionStatusPropertiesSchema } from "./schemas.js";
 import type { HerdrClient, RuntimePrerequisites } from "./types.js";
 
 export type { HerdrChildPanesConfig, Direction, RuntimePrerequisites } from "./types.js";
@@ -52,6 +54,22 @@ function prerequisitesMet(prereqs: RuntimePrerequisites): boolean {
   );
 }
 
+const ACTIVITY_EVENT_TYPES = new Set([
+  "message.updated",
+  "message.part.updated",
+  "message.part.delta",
+]);
+const ACTIVE_STATUS_TYPES = new Set(["active", "working", "busy", "running", "streaming"]);
+
+function isActiveStatus(status: unknown): boolean {
+  if (typeof status !== "object" || status === null) {
+    return false;
+  }
+  return (
+    "type" in status && typeof status.type === "string" && ACTIVE_STATUS_TYPES.has(status.type)
+  );
+}
+
 export interface PluginDependencies {
   readonly registry?: ChildSessionRegistry;
   readonly herdrClient?: HerdrClient;
@@ -93,25 +111,65 @@ export const herdrChildPanesPlugin: Plugin = async (
 
   return {
     event: async ({ event }) => {
-      if (event.type !== "session.created") return;
+      const eventType: string = event.type;
+      if (eventType === "session.created") {
+        const sessionId = resolveSessionId(event);
+        if (!sessionId) return;
 
-      const properties = event.properties;
-      const info = properties?.info;
-      if (!info?.id || !info.parentID) return;
+        const parsed = sessionCreatedPropertiesSchema.safeParse(event.properties);
+        if (!parsed.success || !parsed.data.info.parentID) return;
 
-      const sessionId = info.id;
-      const parentId = info.parentID;
-      const owned = await ownershipResolver.isOwnedChild({ sessionId, parentId });
-      if (!owned) {
-        logger.debug("Child session not owned", { sessionId, parentId });
+        const parentId = parsed.data.info.parentID;
+        const owned = await ownershipResolver.isOwnedChild({ sessionId, parentId });
+        if (!owned) {
+          logger.debug("Child session not owned", { sessionId, parentId });
+          return;
+        }
+        const registered = registry.register(sessionId, parentId);
+        if (!registered) {
+          logger.debug("Child session already registered", { sessionId, parentId });
+          return;
+        }
+        logger.info("Child session registered", { sessionId, parentId });
         return;
       }
-      const registered = registry.register(sessionId, parentId);
-      if (!registered) {
-        logger.debug("Child session already registered", { sessionId, parentId });
+
+      const sessionId = resolveSessionId(event);
+      if (!sessionId || !registry.has(sessionId)) return;
+
+      if (eventType === "session.status") {
+        const parsed = sessionStatusPropertiesSchema.safeParse(event.properties);
+        if (parsed.success && isActiveStatus(parsed.data.status)) {
+          const session = registry.get(sessionId);
+          if (session?.state === "waiting_activity") {
+            registry.transitionTo(sessionId, "spawning");
+          } else if (session?.state === "idle_pending") {
+            registry.transitionTo(sessionId, "attached");
+          }
+        }
         return;
       }
-      logger.info("Child session registered", { sessionId, parentId });
+
+      if (ACTIVITY_EVENT_TYPES.has(eventType)) {
+        const session = registry.get(sessionId);
+        if (session?.state === "waiting_activity") {
+          registry.transitionTo(sessionId, "spawning");
+        } else if (session?.state === "idle_pending") {
+          registry.transitionTo(sessionId, "attached");
+        }
+        return;
+      }
+
+      if (eventType === "session.idle") {
+        registry.transitionTo(sessionId, "idle_pending");
+        return;
+      }
+
+      if (eventType === "session.deleted" && registry.transitionTo(sessionId, "closing")) {
+        if (registry.get(sessionId)?.paneId === undefined) {
+          registry.transitionTo(sessionId, "closed");
+        }
+      }
     },
   };
 };
