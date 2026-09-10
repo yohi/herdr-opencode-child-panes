@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChildSessionRegistry } from "../src/child-session-registry.js";
 
 describe("createChildSessionRegistry", () => {
@@ -87,5 +87,88 @@ describe("createChildSessionRegistry", () => {
     // Then
     expect(active.map((session) => session.sessionId)).toEqual(["waiting"]);
     expect(registry.listByState("closed").map((session) => session.sessionId)).toEqual(["closed"]);
+  });
+});
+
+describe("createChildSessionRegistry timers", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stores and returns a pending timer per session", () => {
+    // Given
+    const registry = createChildSessionRegistry();
+    const timer = setTimeout(() => {}, 1000);
+
+    // When
+    registry.setTimer("child-1", timer);
+
+    // Then
+    expect(registry.getTimer("child-1")).toBe(timer);
+    expect(registry.getTimer("child-2")).toBeUndefined();
+  });
+
+  it("replaces the stored handle when a session sets another timer", () => {
+    // Given
+    const registry = createChildSessionRegistry();
+    const first = setTimeout(() => {}, 1000);
+    const second = setTimeout(() => {}, 2000);
+
+    // When
+    registry.setTimer("child-1", first);
+    registry.setTimer("child-1", second);
+
+    // Then
+    expect(registry.getTimer("child-1")).toBe(second);
+  });
+
+  it("cancels and forgets the timer on clearTimer", () => {
+    // Given
+    const clearTimeoutFn = vi.fn();
+    const registry = createChildSessionRegistry({ clearTimeout: clearTimeoutFn });
+    const timer = setTimeout(() => {}, 1000);
+    registry.setTimer("child-1", timer);
+
+    // When
+    registry.clearTimer("child-1");
+
+    // Then
+    expect(clearTimeoutFn).toHaveBeenCalledWith(timer);
+    expect(registry.getTimer("child-1")).toBeUndefined();
+  });
+
+  it("treats clearTimer for an unknown session as a no-op", () => {
+    // Given
+    const clearTimeoutFn = vi.fn();
+    const registry = createChildSessionRegistry({ clearTimeout: clearTimeoutFn });
+
+    // When
+    registry.clearTimer("child-unknown");
+
+    // Then
+    expect(clearTimeoutFn).not.toHaveBeenCalled();
+  });
+
+  it("cancels every stored timer on clearAllTimers", () => {
+    // Given
+    const clearTimeoutFn = vi.fn();
+    const registry = createChildSessionRegistry({ clearTimeout: clearTimeoutFn });
+    const timerA = setTimeout(() => {}, 1000);
+    const timerB = setTimeout(() => {}, 2000);
+    registry.setTimer("child-a", timerA);
+    registry.setTimer("child-b", timerB);
+
+    // When
+    registry.clearAllTimers();
+
+    // Then
+    expect(clearTimeoutFn).toHaveBeenCalledWith(timerA);
+    expect(clearTimeoutFn).toHaveBeenCalledWith(timerB);
+    expect(registry.getTimer("child-a")).toBeUndefined();
+    expect(registry.getTimer("child-b")).toBeUndefined();
   });
 });

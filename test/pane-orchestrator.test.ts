@@ -3,7 +3,10 @@ import type { Mock } from "vitest";
 import { describe, expect, it, vi } from "vitest";
 import type { AttachLauncher } from "../src/attach-launcher.js";
 import { createChildSessionRegistry } from "../src/child-session-registry.js";
-import type { ChildSessionRegistry } from "../src/child-session.js";
+import type {
+  ChildSessionRegistry,
+  CreateChildSessionRegistryOptions,
+} from "../src/child-session.js";
 import type { ChildOwnershipResolver } from "../src/ownership-resolver.js";
 import {
   type CreatePaneOrchestratorOptions,
@@ -53,17 +56,20 @@ interface Fixture {
   readonly isOwnedChild: Mock<ChildOwnershipResolver["isOwnedChild"]>;
 }
 
-function createFixture(configOverrides: Partial<HerdrChildPanesConfig> = {}): Fixture {
+function createFixture(
+  configOverrides: Partial<HerdrChildPanesConfig> = {},
+  registryOptions: CreateChildSessionRegistryOptions = {},
+): Fixture {
   const config: HerdrChildPanesConfig = {
     enabled: true,
-    idleGraceMs: 10000,
+    idleGraceMs: 1000,
     maxPanes: 4,
     direction: "auto",
     closeRetries: 3,
     debug: false,
     ...configOverrides,
   };
-  const registry = createChildSessionRegistry();
+  const registry = createChildSessionRegistry(registryOptions);
   const herdrClient: HerdrClient = {
     getPane: vi.fn<HerdrClient["getPane"]>().mockResolvedValue(null),
     getPaneLayout: vi.fn<HerdrClient["getPaneLayout"]>().mockResolvedValue({
@@ -509,5 +515,170 @@ describe("createPaneOrchestrator", () => {
     ).resolves.toBeUndefined();
     expect(fixture.splitPane).not.toHaveBeenCalled();
     expect(fixture.registry.get(CHILD_ID)?.state).toBe("waiting_activity");
+  });
+
+  describe("idle cleanup", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("closes the pane after the grace period elapses", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("idle_pending");
+      expect(fixture.closePane).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(1);
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("does not arm a second timer for duplicate idle events", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      const timerCount = vi.getTimerCount();
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+
+      expect(vi.getTimerCount()).toBe(timerCount);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fixture.closePane).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("resumes the session and cancels the close when activity arrives before the timeout", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fixture.closePane).not.toHaveBeenCalled();
+    });
+
+    it("also resumes the session on an active status before the timeout", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fixture.closePane).not.toHaveBeenCalled();
+    });
+
+    it("ignores a stale timer that fires after the session resumed", async () => {
+      // The registry forgets the handle but never really cancels the timer,
+      // simulating a stale fire after a resume.
+      const neverCancel = vi.fn();
+      const fixture = createFixture({}, { clearTimeout: neverCancel });
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("closes the pane immediately when a session is deleted while idle pending", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+
+      await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(1);
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fixture.closePane).toHaveBeenCalledTimes(1);
+    });
+
+    it("never closes the caller pane when the idle timer fires", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+      fixture.registry.setPaneId(CHILD_ID, CALLER_PANE_ID);
+
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("closes nothing when an idle session without a pane times out", async () => {
+      const fixture = createFixture();
+      await registerOwnedChild(fixture);
+      // Walk the state machine to attached without ever splitting a pane.
+      expect(fixture.registry.transitionTo(CHILD_ID, "spawning")).toBe(true);
+      expect(fixture.registry.transitionTo(CHILD_ID, "attached")).toBe(true);
+
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("retries the close with backoff and marks the session failed on exhaustion", async () => {
+      const fixture = createFixture();
+      fixture.closePane.mockResolvedValue(false);
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+
+      // Grace (1000) + backoffs 500 + 1000 + 2000: initial attempt plus
+      // closeRetries (3) retries, then exhaustion.
+      await vi.advanceTimersByTimeAsync(4500);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(4);
+      expect(fixture.registry.get(CHILD_ID)).toMatchObject({
+        state: "failed",
+        failureReason: "close_failed",
+      });
+    });
+
+    it("closes the pane when a retry succeeds before the retry limit", async () => {
+      const fixture = createFixture();
+      fixture.closePane
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue(true);
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+
+      // Grace + two failed attempts, then the third succeeds.
+      await vi.advanceTimersByTimeAsync(2500);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(3);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("cancels pending timers on dispose without closing attached panes", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+
+      await fixture.orchestrator.dispose();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("idle_pending");
+    });
   });
 });

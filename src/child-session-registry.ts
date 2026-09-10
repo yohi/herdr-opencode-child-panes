@@ -4,6 +4,7 @@ import {
   type ChildSessionRegistry,
   type ChildSessionState,
   type CreateChildSessionRegistryOptions,
+  type SessionTimer,
 } from "./child-session.js";
 
 const TERMINAL_STATES = new Set<ChildSessionState>(["closed", "ignored", "failed"]);
@@ -16,7 +17,9 @@ export function createChildSessionRegistry(
   options: CreateChildSessionRegistryOptions = {},
 ): ChildSessionRegistry {
   const now = options.now ?? Date.now;
+  const clearTimeoutFn = options.clearTimeout ?? globalThis.clearTimeout.bind(globalThis);
   const sessions = new Map<string, ChildSession>();
+  const timers = new Map<string, SessionTimer>();
 
   function update(sessionId: string, changes: Partial<ChildSession>): void {
     const session = sessions.get(sessionId);
@@ -77,6 +80,30 @@ export function createChildSessionRegistry(
 
     listByState(state: ChildSessionState): readonly ChildSession[] {
       return [...sessions.values()].filter((session) => session.state === state);
+    },
+
+    setTimer(sessionId: string, timer: SessionTimer): void {
+      timers.set(sessionId, timer);
+    },
+
+    getTimer(sessionId: string): SessionTimer | undefined {
+      return timers.get(sessionId);
+    },
+
+    clearTimer(sessionId: string): void {
+      const timer = timers.get(sessionId);
+      if (timer === undefined) {
+        return;
+      }
+      timers.delete(sessionId);
+      clearTimeoutFn(timer);
+    },
+
+    clearAllTimers(): void {
+      for (const timer of timers.values()) {
+        clearTimeoutFn(timer);
+      }
+      timers.clear();
     },
   };
 }

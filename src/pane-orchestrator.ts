@@ -13,6 +13,12 @@ const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>(["message.updated", "message.
 const ACTIVE_STATUS_TYPES = new Set<string>(["active", "working", "busy", "running", "streaming"]);
 
 /**
+ * Backoff delays between close retries; the last value is reused when more
+ * retries are configured than there are entries.
+ */
+const CLOSE_RETRY_BACKOFF_MS: readonly number[] = [500, 1000, 2000];
+
+/**
  * Drives the child pane lifecycle from OpenCode events: registers owned child
  * sessions, splits the caller pane on the first meaningful activity, attaches
  * the child session into the new pane, and closes panes when sessions die.
@@ -45,12 +51,8 @@ export interface CreatePaneOrchestratorOptions {
   readonly attachLauncher: AttachLauncher;
   /** Structured logger. */
   readonly logger: Logger;
-  /** Clock source; wired into PR3 idle timers. */
-  readonly now?: () => number;
-  /** Timer creation; wired into PR3 idle timers. */
+  /** Timer creation for the idle grace period and close-retry backoff. */
   readonly setTimeout?: typeof globalThis.setTimeout;
-  /** Timer cancellation; wired into PR3 idle timers. */
-  readonly clearTimeout?: typeof globalThis.clearTimeout;
 }
 
 function isActiveStatus(status: unknown): boolean {
@@ -72,7 +74,14 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const registry = options.registry;
   const attachLauncher = options.attachLauncher;
   const logger = options.logger;
+  const setTimeoutFn = options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
   const queue = createAsyncQueue();
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeoutFn(resolve, ms);
+    });
+  }
 
   function fail(sessionId: string, reason: string): void {
     registry.setFailureReason(sessionId, reason);
@@ -144,33 +153,43 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   }
 
   /**
-   * Queue the Herdr close for an already-`closing` session. Sessions without
-   * an owned pane transition straight to `closed` without touching Herdr.
+   * Close an already-`closing` session's pane, retrying up to `retries` times
+   * with exponential-ish backoff. Each attempt re-checks the lifecycle state
+   * so a close taken over by another path stops without touching Herdr again.
    */
-  function enqueueClose(session: ChildSession): Promise<void> {
-    const childPaneId = session.paneId;
-    if (childPaneId === undefined || childPaneId === paneId) {
-      // Nothing to clean up, or the only known pane is the caller pane itself.
-      registry.transitionTo(session.sessionId, "closed");
-      return Promise.resolve();
+  async function closePaneUntilClosed(
+    sessionId: string,
+    childPaneId: string,
+    retries: number,
+  ): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      const current = registry.get(sessionId);
+      if (!current || current.state !== "closing") {
+        return;
+      }
+      if (await herdrClient.closePane(childPaneId)) {
+        registry.transitionTo(sessionId, "closed");
+        logger.info("Child pane closed", { sessionId, paneId: childPaneId });
+        return;
+      }
+      if (attempt >= retries) {
+        fail(sessionId, "close_failed");
+        return;
+      }
+      await delay(CLOSE_RETRY_BACKOFF_MS[Math.min(attempt, CLOSE_RETRY_BACKOFF_MS.length - 1)]);
     }
+  }
+
+  /**
+   * Queue the Herdr close for a `closing` session that owns a child pane.
+   */
+  function enqueueCloseTask(
+    session: ChildSession,
+    childPaneId: string,
+    retries: number,
+  ): Promise<void> {
     return queue
-      .enqueue(async () => {
-        const current = registry.get(session.sessionId);
-        if (!current || current.state !== "closing") {
-          return;
-        }
-        const closed = await herdrClient.closePane(childPaneId);
-        if (closed) {
-          registry.transitionTo(current.sessionId, "closed");
-          logger.info("Child pane closed", {
-            sessionId: current.sessionId,
-            paneId: childPaneId,
-          });
-          return;
-        }
-        fail(current.sessionId, "close_failed");
-      })
+      .enqueue(() => closePaneUntilClosed(session.sessionId, childPaneId, retries))
       .catch((error: unknown) => {
         logger.error("Unhandled error while closing child pane", {
           sessionId: session.sessionId,
@@ -182,6 +201,22 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
           fail(current.sessionId, "close_failed");
         }
       });
+  }
+
+  /**
+   * Queue the Herdr close for an already-`closing` session. Sessions without
+   * an owned pane transition straight to `closed` without touching Herdr.
+   * Delete-triggered closes are single-attempt; only the idle-timeout close
+   * retries.
+   */
+  function enqueueClose(session: ChildSession): Promise<void> {
+    const childPaneId = session.paneId;
+    if (childPaneId === undefined || childPaneId === paneId) {
+      // Nothing to clean up, or the only known pane is the caller pane itself.
+      registry.transitionTo(session.sessionId, "closed");
+      return Promise.resolve();
+    }
+    return enqueueCloseTask(session, childPaneId, 0);
   }
 
   async function handleSessionCreated(event: Event): Promise<void> {
@@ -211,22 +246,39 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     logger.info("Child session registered", { sessionId, parentId });
   }
 
-  async function spawnIfWaiting(sessionId: string | undefined): Promise<void> {
+  function resumeFromIdlePending(sessionId: string): void {
+    registry.clearTimer(sessionId);
+    registry.transitionTo(sessionId, "attached");
+    logger.debug("Child session resumed from idle", { sessionId });
+  }
+
+  /**
+   * Route a work signal (message activity or an active status) to the session:
+   * waiting sessions get spawned, idle_pending sessions resume before the
+   * grace timer fires.
+   */
+  async function resumeOrSpawn(sessionId: string | undefined): Promise<void> {
     if (!sessionId) {
       return;
     }
     const session = registry.get(sessionId);
-    if (!session || session.state !== "waiting_activity") {
+    if (!session) {
       return;
     }
-    await enqueueSpawn(session);
+    if (session.state === "waiting_activity") {
+      await enqueueSpawn(session);
+      return;
+    }
+    if (session.state === "idle_pending") {
+      resumeFromIdlePending(sessionId);
+    }
   }
 
   async function handleActivity(event: Event): Promise<void> {
     if (!MEANINGFUL_ACTIVITY_EVENTS.has(event.type)) {
       return;
     }
-    await spawnIfWaiting(resolveSessionId(event));
+    await resumeOrSpawn(resolveSessionId(event));
   }
 
   async function handleSessionStatus(event: Event): Promise<void> {
@@ -243,7 +295,44 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!isActiveStatus(parsed.data.status)) {
       return;
     }
-    await spawnIfWaiting(sessionId);
+    await resumeOrSpawn(sessionId);
+  }
+
+  /**
+   * Arm the one-shot grace timer for an idle_pending session. The callback
+   * re-checks the state, so a stale timer that fires after a resume (or a
+   * racing delete) is a harmless no-op.
+   */
+  function scheduleIdleTimer(sessionId: string): void {
+    const timer = setTimeoutFn(() => {
+      void closeAfterIdleGrace(sessionId);
+    }, config.idleGraceMs);
+    registry.setTimer(sessionId, timer);
+  }
+
+  /**
+   * Grace period elapsed: transition the session to `closing` and close its
+   * pane with bounded retries. `closing -> closed` on success,
+   * `closing -> failed(close_failed)` when every attempt fails.
+   */
+  function closeAfterIdleGrace(sessionId: string): void {
+    registry.clearTimer(sessionId);
+    const session = registry.get(sessionId);
+    if (!session || session.state !== "idle_pending") {
+      // Activity resumed or the session was deleted first; timer is stale.
+      logger.debug("Stale idle timer ignored", { sessionId });
+      return;
+    }
+    if (!registry.transitionTo(sessionId, "closing")) {
+      return;
+    }
+    const childPaneId = session.paneId;
+    if (childPaneId === undefined || childPaneId === paneId) {
+      // Nothing to clean up, or the only known pane is the caller pane itself.
+      registry.transitionTo(sessionId, "closed");
+      return;
+    }
+    void enqueueCloseTask(session, childPaneId, config.closeRetries);
   }
 
   async function handleSessionIdle(event: Event): Promise<void> {
@@ -252,12 +341,19 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
     const session = registry.get(sessionId);
-    // Only attached sessions go idle; duplicate idles are no-ops. Timer
-    // scheduling for the grace period lands in PR3.
+    // Only attached sessions go idle. The transition doubles as the
+    // idempotency gate, so duplicate idle events never arm a second timer.
     if (!session || session.state !== "attached") {
       return;
     }
-    registry.transitionTo(sessionId, "idle_pending");
+    if (!registry.transitionTo(sessionId, "idle_pending")) {
+      return;
+    }
+    scheduleIdleTimer(sessionId);
+    logger.debug("Child session idle: close scheduled", {
+      sessionId,
+      graceMs: config.idleGraceMs,
+    });
   }
 
   async function handleSessionDeleted(event: Event): Promise<void> {
@@ -269,6 +365,8 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!session) {
       return;
     }
+    // Cancel a pending idle-close timer, if any.
+    registry.clearTimer(sessionId);
     // A rejected transition means the session is already closing/closed or
     // terminal, which keeps duplicate delete events idempotent.
     if (!registry.transitionTo(sessionId, "closing")) {
@@ -304,7 +402,9 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   return {
     handleEvent,
     dispose: async () => {
-      // Idle-timer teardown lands in PR3; release the queue for now.
+      // Cancel idle timers without force-closing attached panes, then reject
+      // any newly queued pane work.
+      registry.clearAllTimers();
       queue.dispose();
     },
   };
