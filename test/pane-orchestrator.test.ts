@@ -681,4 +681,77 @@ describe("createPaneOrchestrator", () => {
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("idle_pending");
     });
   });
+
+  describe("capacity limits", () => {
+    it("creates a pane while usage is under maxPanes", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+
+      await attachChild(fixture);
+
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("transitions a waiting session to ignored at maxPanes without splitting", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(createdEvent("ses_childB", PARENT_ID));
+
+      await fixture.orchestrator.handleEvent(activityEvent("ses_childB"));
+
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+      expect(fixture.attach).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get("ses_childB")).toMatchObject({
+        state: "ignored",
+        failureReason: "capacity_limit",
+      });
+    });
+
+    it("cannot exceed maxPanes when many children spawn concurrently", async () => {
+      const fixture = createFixture({ maxPanes: 2 });
+      const children = ["ses_childA", "ses_childB", "ses_childC", "ses_childD"];
+      for (const child of children) {
+        await fixture.orchestrator.handleEvent(createdEvent(child, PARENT_ID));
+      }
+
+      await Promise.all(
+        children.map((child) => fixture.orchestrator.handleEvent(activityEvent(child))),
+      );
+
+      expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      const states = children.map((child) => fixture.registry.get(child)?.state);
+      expect(states).toEqual(["attached", "attached", "ignored", "ignored"]);
+      for (const child of children.slice(2)) {
+        expect(fixture.registry.get(child)).toMatchObject({
+          failureReason: "capacity_limit",
+        });
+      }
+    });
+
+    it("releases capacity once a pane closes", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+
+      await fixture.orchestrator.handleEvent(createdEvent("ses_childB", PARENT_ID));
+      await fixture.orchestrator.handleEvent(activityEvent("ses_childB"));
+
+      expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      expect(fixture.registry.get("ses_childB")?.state).toBe("attached");
+    });
+
+    it("leaves the ignored child session untouched in Herdr", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(createdEvent("ses_childB", PARENT_ID));
+
+      await fixture.orchestrator.handleEvent(activityEvent("ses_childB"));
+
+      // The OMO child keeps running; the bridge only refuses to visualize it.
+      expect(fixture.closePane).not.toHaveBeenCalled();
+      expect(fixture.attach).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get("ses_childB")?.state).toBe("ignored");
+    });
+  });
 });

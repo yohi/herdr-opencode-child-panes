@@ -124,6 +124,24 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   }
 
   /**
+   * Count the panes the bridge currently owns: sessions in an occupied
+   * state that carry a recorded pane. Closed, ignored and failed sessions
+   * release capacity, and because panes are only created on the serialized
+   * spawn path below, no in-flight pane can escape this count.
+   */
+  function countBridgeOwnedPanes(): number {
+    let count = 0;
+    for (const state of ["attached", "idle_pending"] as const) {
+      for (const session of registry.listByState(state)) {
+        if (session.paneId !== undefined) {
+          count += 1;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
    * Claim the session for a spawn and queue the Herdr work. The synchronous
    * `spawning` transition is the idempotency gate: concurrent activity events
    * observe it and skip, so at most one split is ever queued per session.
@@ -133,6 +151,17 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       .enqueue(async () => {
         const current = registry.get(session.sessionId);
         if (!current || current.state !== "waiting_activity") {
+          return;
+        }
+        // Capacity is checked on the serialized spawn path, so concurrent
+        // activity events cannot oversubscribe the caller pane.
+        if (countBridgeOwnedPanes() >= config.maxPanes) {
+          registry.setFailureReason(current.sessionId, "capacity_limit");
+          registry.transitionTo(current.sessionId, "ignored");
+          logger.info("Child pane skipped: capacity limit reached", {
+            sessionId: current.sessionId,
+            maxPanes: config.maxPanes,
+          });
           return;
         }
         if (!registry.transitionTo(current.sessionId, "spawning")) {
