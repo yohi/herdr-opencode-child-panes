@@ -1,7 +1,14 @@
+import type {
+  DirectionSchemaOutput,
+  PaneInfoSchemaOutput,
+  PaneLayoutChildSchemaOutput,
+  PaneLayoutSchemaOutput,
+} from "./schemas.js";
+
 /**
  * Herdr pane layout direction.
  */
-export type Direction = "auto" | "horizontal" | "vertical";
+export type Direction = DirectionSchemaOutput;
 
 /**
  * Parsed plugin configuration.
@@ -36,33 +43,23 @@ export interface RuntimePrerequisites {
 }
 
 /**
- * Opaque Herdr pane identifier.
- */
-export type PaneId = Brand<string, "PaneId">;
-
-/**
  * Minimal pane information returned by `herdr pane get`.
  */
-export interface PaneInfo {
-  readonly id: string;
-}
+export type PaneInfo = Readonly<PaneInfoSchemaOutput>;
 
 /**
  * A child entry in a pane layout response.
  */
-export interface PaneLayoutChild {
-  readonly id: string;
-  readonly direction?: Direction;
-}
+export type PaneLayoutChild = Readonly<PaneLayoutChildSchemaOutput>;
 
 /**
  * Pane layout information returned by `herdr pane layout`.
  */
-export interface PaneLayout {
-  readonly paneId: string;
-  readonly direction?: Direction;
-  readonly children?: readonly PaneLayoutChild[];
-}
+export type PaneLayout = Readonly<
+  Omit<PaneLayoutSchemaOutput, "children"> & {
+    children?: readonly PaneLayoutChild[];
+  }
+>;
 
 /**
  * Input for splitting an existing pane.
@@ -80,12 +77,10 @@ export interface HerdrClient {
   getPane(paneId: string): Promise<PaneInfo | null>;
   getPaneLayout(paneId: string): Promise<PaneLayout | null>;
   splitPane(input: SplitPaneInput): Promise<string | null>;
+  /**
+   * Execute a shell command in the target pane. The command is interpreted by
+   * the target shell, so callers must not pass untrusted command strings.
+   */
   runInPane(paneId: string, command: string): Promise<boolean>;
   closePane(paneId: string): Promise<boolean>;
 }
-
-/**
- * Brand helper for distinct primitive types.
- */
-declare const __brand: unique symbol;
-export type Brand<T, B> = T & { readonly [__brand]: B };

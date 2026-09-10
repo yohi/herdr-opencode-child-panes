@@ -1,26 +1,8 @@
 import { execFile } from "node:child_process";
 import { z } from "zod";
 import type { Logger } from "./logger.js";
+import { paneInfoSchema, paneLayoutSchema, splitPaneResponseSchema } from "./schemas.js";
 import type { HerdrClient, PaneInfo, PaneLayout, SplitPaneInput } from "./types.js";
-
-const paneInfoSchema = z.object({
-  id: z.string().min(1),
-});
-
-const paneLayoutChildSchema = z.object({
-  id: z.string().min(1),
-  direction: z.enum(["auto", "horizontal", "vertical"]).optional(),
-});
-
-const paneLayoutSchema = z.object({
-  paneId: z.string().min(1),
-  direction: z.enum(["auto", "horizontal", "vertical"]).optional(),
-  children: z.array(paneLayoutChildSchema).optional(),
-});
-
-const splitPaneResponseSchema = z.object({
-  id: z.string().min(1),
-});
 
 const noopLogger: Logger = {
   debug: () => {},
@@ -51,15 +33,15 @@ export type Runner = (
   herdrPath: string,
   argv: readonly string[],
   timeoutMs: number,
-) => Promise<Buffer>;
+) => Promise<string>;
 
 async function defaultRunner(
   herdrPath: string,
   argv: readonly string[],
   timeoutMs: number,
-): Promise<Buffer> {
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(herdrPath, [...argv], { encoding: "buffer", timeout: timeoutMs }, (error, stdout) => {
+    execFile(herdrPath, [...argv], { encoding: "utf8", timeout: timeoutMs }, (error, stdout) => {
       if (error) {
         reject(error);
         return;
@@ -82,17 +64,32 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
   const logger = options.logger ?? noopLogger;
   const runner = options.runner ?? defaultRunner;
 
-  async function run(argv: readonly string[]): Promise<Buffer> {
+  async function run(argv: readonly string[]): Promise<string> {
     return runner(herdrPath, argv, timeoutMs);
   }
 
   async function runJson<T>(argv: readonly string[], schema: z.ZodType<T>): Promise<T | null> {
+    let stdout: string;
     try {
-      const stdout = await run(argv);
-      const raw: unknown = JSON.parse(stdout.toString("utf-8"));
-      return schema.parse(raw);
+      stdout = await run(argv);
     } catch (error) {
       const { code } = classifyError(error);
+      logger.warn(`Herdr ${subcommandName(argv)} command failed`, {
+        code,
+      });
+      return null;
+    }
+
+    try {
+      const raw: unknown = JSON.parse(stdout);
+      return schema.parse(raw);
+    } catch (error) {
+      const code =
+        error instanceof SyntaxError
+          ? "INVALID_JSON"
+          : error instanceof z.ZodError
+            ? "INVALID_RESPONSE"
+            : "UNKNOWN";
       logger.warn(`Herdr ${subcommandName(argv)} command failed`, {
         code,
       });

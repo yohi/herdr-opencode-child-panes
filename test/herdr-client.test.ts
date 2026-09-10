@@ -6,7 +6,7 @@ import type { Direction } from "../src/types.js";
 const mockRunner = vi.fn<Runner>();
 
 function mockRunnerStdout(stdout: string): void {
-  mockRunner.mockResolvedValue(Buffer.from(stdout));
+  mockRunner.mockResolvedValue(stdout);
 }
 
 function mockRunnerError(code: string | number, message = "herdr failed"): void {
@@ -30,6 +30,10 @@ describe("subcommandName", () => {
 
   it("uses the only argv entry for a single-element command", () => {
     expect(subcommandName(["pane"])).toBe("pane");
+  });
+
+  it("falls back to herdr for an empty command", () => {
+    expect(subcommandName([])).toBe("herdr");
   });
 });
 
@@ -69,20 +73,28 @@ describe("createHerdrClient", () => {
 
     it("returns null when stdout is not valid JSON", async () => {
       mockRunnerStdout("not-json");
-      const client = createHerdrClient({ runner: mockRunner });
+      const logger = createMockLogger();
+      const client = createHerdrClient({ runner: mockRunner, logger });
 
       const result = await client.getPane("pane-1");
 
       expect(result).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith("Herdr pane get command failed", {
+        code: "INVALID_JSON",
+      });
     });
 
     it("returns null when the parsed JSON lacks a required field", async () => {
       mockRunnerStdout(JSON.stringify({ name: "pane-1" }));
-      const client = createHerdrClient({ runner: mockRunner });
+      const logger = createMockLogger();
+      const client = createHerdrClient({ runner: mockRunner, logger });
 
       const result = await client.getPane("pane-1");
 
       expect(result).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith("Herdr pane get command failed", {
+        code: "INVALID_RESPONSE",
+      });
     });
 
     it("logs failures without exposing command details", async () => {
@@ -93,8 +105,9 @@ describe("createHerdrClient", () => {
       await client.getPane("pane-1");
 
       expect(logger.warn).toHaveBeenCalled();
-      const call = vi.mocked(logger.warn).mock.calls[0];
-      expect(JSON.stringify(call)).not.toContain("secret-token");
+      for (const call of vi.mocked(logger.warn).mock.calls) {
+        expect(JSON.stringify(call)).not.toContain("secret-token");
+      }
     });
 
     it("logs the pane namespace and subcommand without runtime arguments", async () => {
