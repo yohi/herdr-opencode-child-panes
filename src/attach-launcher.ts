@@ -24,6 +24,7 @@ export interface CreateAttachLauncherOptions {
 
 export interface AttachLauncher {
   attach(input: AttachInput): Promise<boolean>;
+  readonly environment?: Readonly<Record<string, string>>;
 }
 
 const AUTH_ENV_KEYS = ["OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_USERNAME"] as const;
@@ -34,6 +35,20 @@ function stripCredentials(url: URL): string {
   safe.username = "";
   safe.password = "";
   return safe.toString();
+}
+
+function stripUrlQueryAndFragment(url: string): string | undefined {
+  try {
+    const safe = new URL(url);
+    if (safe.search === "" && safe.hash === "") {
+      return url;
+    }
+    safe.search = "";
+    safe.hash = "";
+    return safe.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 export function buildAttachCommand(input: AttachInput): string {
@@ -69,11 +84,11 @@ export function redactAttachCommand(command: string): string {
   while (cursor < redacted.length) {
     const equalsIndex = redacted.indexOf("=", cursor);
     if (equalsIndex < 0) {
-      return redacted;
+      break;
     }
     const key = redacted.slice(cursor, equalsIndex);
     if (!AUTH_ENV_KEYS.some((authKey) => authKey === key)) {
-      return redacted;
+      break;
     }
 
     const valueStart = equalsIndex + 1;
@@ -85,33 +100,53 @@ export function redactAttachCommand(command: string): string {
     }
   }
 
-  return redacted;
+  const attachMarker = "opencode attach ";
+  const markerStart = redacted.indexOf(attachMarker);
+  if (markerStart < 0) {
+    return redacted;
+  }
+
+  const urlStart = markerStart + attachMarker.length;
+  const urlEnd = shellWordEnd(redacted, urlStart);
+  const shellUrl = redacted.slice(urlStart, urlEnd);
+  if (!shellUrl.startsWith("'") || !shellUrl.endsWith("'")) {
+    return redacted;
+  }
+
+  const safeUrl = stripUrlQueryAndFragment(shellUrl.slice(1, -1));
+  if (safeUrl === undefined) {
+    return redacted;
+  }
+  return `${redacted.slice(0, urlStart)}${quoteShell(safeUrl)}${redacted.slice(urlEnd)}`;
 }
 
-function authEnvAssignments(env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  return AUTH_ENV_KEYS.filter((key) => {
+function authEnvironment(env: NodeJS.ProcessEnv = process.env): Readonly<Record<string, string>> {
+  const environment: Record<string, string> = {};
+  for (const key of AUTH_ENV_KEYS) {
     const value = env[key];
-    return value !== undefined && value.trim().length > 0;
-  }).map((key) => `${key}=${quoteShell(env[key] ?? "")}`);
+    if (value !== undefined && value.trim().length > 0) {
+      environment[key] = value;
+    }
+  }
+  return environment;
 }
 
 export function createAttachLauncher(options: CreateAttachLauncherOptions): AttachLauncher {
   const herdrClient = options.herdrClient;
   const logger = options.logger ?? noopLogger;
   const env = options.env ?? process.env;
+  const environment = authEnvironment(env);
 
   async function launch(input: AttachInput): Promise<boolean> {
     const command = buildAttachCommand(input);
-    const envPrefix = authEnvAssignments(env).join(" ");
-    const fullCommand = envPrefix ? `${envPrefix} ${command}` : command;
     logger.debug("Attaching OpenCode session to pane", {
       paneId: input.paneId,
       sessionId: input.sessionId,
-      command: redactAttachCommand(fullCommand),
+      command: redactAttachCommand(command),
     });
 
     try {
-      const attached = await herdrClient.runInPane(input.paneId, fullCommand);
+      const attached = await herdrClient.runInPane(input.paneId, command);
       if (!attached) {
         logger.warn("Failed to run attach command in pane", {
           paneId: input.paneId,
@@ -131,5 +166,5 @@ export function createAttachLauncher(options: CreateAttachLauncherOptions): Atta
     }
   }
 
-  return { attach: launch };
+  return { attach: launch, environment };
 }

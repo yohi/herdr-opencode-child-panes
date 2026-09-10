@@ -121,11 +121,15 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
         return null;
       }
       const layout = response.result.layout;
+      const pane = layout.panes.find((candidate) => candidate.pane_id === paneId);
+      if (!pane) {
+        return null;
+      }
       const direction = layout.splits[0]?.direction;
       return {
         paneId,
-        width: layout.area.width,
-        height: layout.area.height,
+        width: pane.rect.width,
+        height: pane.rect.height,
         ...(direction === undefined ? {} : { direction }),
       };
     },
@@ -137,6 +141,9 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
       }
       if (input.command !== undefined) {
         argv.push("--command", input.command);
+      }
+      for (const [key, value] of Object.entries(input.env ?? {})) {
+        argv.push("--env", `${key}=${value}`);
       }
       if (input.noFocus) {
         argv.push("--no-focus");

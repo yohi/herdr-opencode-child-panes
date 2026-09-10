@@ -71,11 +71,43 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const registry = options.registry;
   const attachLauncher = options.attachLauncher;
   const logger = options.logger;
+  const spawnReservations = new Set<string>();
 
   function fail(sessionId: string, reason: string): void {
     registry.setFailureReason(sessionId, reason);
     registry.transitionTo(sessionId, "failed");
     logger.warn("Child pane lifecycle failure", { sessionId, reason });
+  }
+
+  function reserveSpawn(sessionId: string): boolean {
+    if (spawnReservations.has(sessionId)) {
+      return true;
+    }
+    const paneCount = registry
+      .listActive()
+      .filter((session) => session.paneId !== undefined).length;
+    if (paneCount + spawnReservations.size >= config.maxPanes) {
+      registry.setFailureReason(sessionId, "capacity_limit");
+      registry.transitionTo(sessionId, "ignored");
+      logger.warn("Child pane capacity reached", { sessionId });
+      return false;
+    }
+    spawnReservations.add(sessionId);
+    return true;
+  }
+
+  async function closeSpawnedPane(sessionId: string, childPaneId: string): Promise<void> {
+    registry.setPaneId(sessionId, childPaneId);
+    const closed = await herdrClient.closePane(childPaneId);
+    if (closed) {
+      registry.transitionTo(sessionId, "closed");
+      logger.info("Child pane closed after session deletion", {
+        sessionId,
+        paneId: childPaneId,
+      });
+      return;
+    }
+    fail(sessionId, "close_failed");
   }
 
   /**
@@ -84,36 +116,62 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
    * second activity event racing the split observes `spawning` and skips.
    */
   async function spawnChild(session: ChildSession): Promise<void> {
-    const transitioned = registry.transitionTo(session.sessionId, "spawning");
-    if (!transitioned) {
+    if (!reserveSpawn(session.sessionId)) {
       return;
     }
 
-    const layout = config.direction === "auto" ? await herdrClient.getPaneLayout(paneId) : null;
-    const direction = resolvePaneLayoutDirection({ direction: config.direction, layout });
-    const newPaneId = await herdrClient.splitPane({ paneId, direction, noFocus: true });
-    if (newPaneId === null) {
-      fail(session.sessionId, "split_failed");
-      return;
-    }
+    try {
+      const transitioned = registry.transitionTo(session.sessionId, "spawning");
+      if (!transitioned) {
+        return;
+      }
 
-    const attached = await attachLauncher.attach({
-      paneId: newPaneId,
-      sessionId: session.sessionId,
-      serverUrl,
-      directory,
-    });
-    if (!attached) {
-      // Only the freshly created pane may be rolled back; the child session
-      // itself is never touched.
-      await herdrClient.closePane(newPaneId);
-      fail(session.sessionId, "attach_failed");
-      return;
-    }
+      const layout = config.direction === "auto" ? await herdrClient.getPaneLayout(paneId) : null;
+      const direction = resolvePaneLayoutDirection({ direction: config.direction, layout });
+      const environment = attachLauncher.environment;
+      const newPaneId = await herdrClient.splitPane({
+        paneId,
+        direction,
+        noFocus: true,
+        ...(environment !== undefined && Object.keys(environment).length > 0
+          ? { env: environment }
+          : {}),
+      });
+      if (newPaneId === null) {
+        fail(session.sessionId, "split_failed");
+        return;
+      }
 
-    registry.setPaneId(session.sessionId, newPaneId);
-    registry.transitionTo(session.sessionId, "attached");
-    logger.info("Child pane attached", { sessionId: session.sessionId, paneId: newPaneId });
+      if (registry.get(session.sessionId)?.state === "closing") {
+        await closeSpawnedPane(session.sessionId, newPaneId);
+        return;
+      }
+
+      const attached = await attachLauncher.attach({
+        paneId: newPaneId,
+        sessionId: session.sessionId,
+        serverUrl,
+        directory,
+      });
+      if (!attached) {
+        // Only the freshly created pane may be rolled back; the child session
+        // itself is never touched.
+        await herdrClient.closePane(newPaneId);
+        fail(session.sessionId, "attach_failed");
+        return;
+      }
+
+      if (registry.get(session.sessionId)?.state === "closing") {
+        await closeSpawnedPane(session.sessionId, newPaneId);
+        return;
+      }
+
+      registry.setPaneId(session.sessionId, newPaneId);
+      registry.transitionTo(session.sessionId, "attached");
+      logger.info("Child pane attached", { sessionId: session.sessionId, paneId: newPaneId });
+    } finally {
+      spawnReservations.delete(session.sessionId);
+    }
   }
 
   async function handleSessionCreated(event: Event): Promise<void> {
@@ -201,6 +259,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!session) {
       return;
     }
+    const wasSpawning = session.state === "spawning";
     // A rejected transition means the session is already closing/closed or
     // terminal, which keeps duplicate delete events idempotent.
     if (!registry.transitionTo(sessionId, "closing")) {
@@ -209,8 +268,12 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
 
     const childPaneId = session.paneId;
     if (childPaneId === undefined || childPaneId === paneId) {
-      // Nothing to clean up, or the only known pane is the caller pane itself.
-      registry.transitionTo(sessionId, "closed");
+      // A spawning session has not reported its newly created pane yet. Leave
+      // it closing so spawnChild can close that pane after split completes.
+      if (!wasSpawning) {
+        // Nothing to clean up, or the only known pane is the caller pane itself.
+        registry.transitionTo(sessionId, "closed");
+      }
       return;
     }
 
