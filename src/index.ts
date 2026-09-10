@@ -52,7 +52,7 @@ export const herdrChildPanesPlugin: Plugin = async ({ serverUrl }) => {
 
   logger.info("Herdr child panes plugin active", {
     paneId: prereqs.herdrPaneId,
-    serverUrl: prereqs.serverUrl?.toString(),
+    serverUrl: prereqs.serverUrl?.origin,
   });
 
   return {
