@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { createAsyncQueue } from "./async-queue.js";
 import { createAttachLauncher } from "./attach-launcher.js";
 import { createChildSessionRegistry } from "./child-session-registry.js";
 import type { ChildSessionRegistry } from "./child-session.js";
@@ -15,6 +16,8 @@ export type { HerdrChildPanesConfig, Direction, RuntimePrerequisites } from "./t
 export type { PaneInfo, PaneLayout, SplitPaneInput, HerdrClient } from "./types.js";
 export { parseConfig, DEFAULT_CONFIG } from "./config.js";
 export { createLogger } from "./logger.js";
+export { createAsyncQueue } from "./async-queue.js";
+export type { AsyncQueue } from "./async-queue.js";
 export { createHerdrClient } from "./herdr-client.js";
 export type { CreateHerdrClientOptions } from "./herdr-client.js";
 export { createRootSessionResolver } from "./root-session-resolver.js";

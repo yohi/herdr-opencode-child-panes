@@ -386,4 +386,128 @@ describe("createPaneOrchestrator", () => {
 
     expect(fixture.splitPane).not.toHaveBeenCalled();
   });
+  it("serializes 10 concurrent activity events into at most one split", async () => {
+    const fixture = createFixture();
+    await registerOwnedChild(fixture);
+
+    await Promise.all(
+      Array.from({ length: 10 }, () => fixture.orchestrator.handleEvent(activityEvent(CHILD_ID))),
+    );
+
+    expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+    expect(fixture.attach).toHaveBeenCalledTimes(1);
+    expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+  });
+
+  it("serializes pane mutations across concurrent children", async () => {
+    const fixture = createFixture();
+    const CHILD_A = "ses_childA";
+    const CHILD_B = "ses_childB";
+    await fixture.orchestrator.handleEvent(createdEvent(CHILD_A, PARENT_ID));
+    await fixture.orchestrator.handleEvent(createdEvent(CHILD_B, PARENT_ID));
+
+    const callLog: string[] = [];
+    let splitCalls = 0;
+    let releaseSplit: () => void = () => {};
+    fixture.splitPane.mockImplementation(() => {
+      callLog.push("split");
+      splitCalls += 1;
+      if (splitCalls === 1) {
+        return new Promise<string | null>((resolve) => {
+          releaseSplit = () => resolve(NEW_PANE_ID);
+        });
+      }
+      return Promise.resolve(NEW_PANE_ID);
+    });
+    fixture.attach.mockImplementation(async (input) => {
+      callLog.push(`attach:${input.sessionId}`);
+      return true;
+    });
+
+    const first = fixture.orchestrator.handleEvent(activityEvent(CHILD_A));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = fixture.orchestrator.handleEvent(activityEvent(CHILD_B));
+    releaseSplit();
+    await Promise.all([first, second]);
+
+    expect(callLog).toEqual(["split", `attach:${CHILD_A}`, "split", `attach:${CHILD_B}`]);
+    expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-checks lifecycle state inside the queued spawn before mutating Herdr", async () => {
+    const fixture = createFixture();
+    const CHILD_A = "ses_childA";
+    const CHILD_B = "ses_childB";
+    await fixture.orchestrator.handleEvent(createdEvent(CHILD_A, PARENT_ID));
+    await fixture.orchestrator.handleEvent(createdEvent(CHILD_B, PARENT_ID));
+
+    let releaseSplit: () => void = () => {};
+    fixture.splitPane.mockImplementationOnce(
+      () =>
+        new Promise<string | null>((resolve) => {
+          releaseSplit = () => resolve(NEW_PANE_ID);
+        }),
+    );
+
+    const firstSpawn = fixture.orchestrator.handleEvent(activityEvent(CHILD_A));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const secondSpawn = fixture.orchestrator.handleEvent(activityEvent(CHILD_B));
+    // Child B dies while its spawn is still queued behind child A's spawn.
+    await fixture.orchestrator.handleEvent(deletedEvent(CHILD_B));
+    releaseSplit();
+    await Promise.all([firstSpawn, secondSpawn]);
+
+    expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+    expect(fixture.registry.get(CHILD_B)?.state).toBe("closed");
+  });
+
+  it("keeps the orchestrator responsive when a queued spawn throws", async () => {
+    const fixture = createFixture();
+    fixture.splitPane.mockRejectedValue(new Error("herdr exploded"));
+    await registerOwnedChild(fixture);
+
+    await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+
+    expect(fixture.registry.get(CHILD_ID)).toMatchObject({
+      state: "failed",
+      failureReason: "spawn_failed",
+    });
+
+    // A later child still goes through the queue normally.
+    const CHILD_B = "ses_childB";
+    fixture.splitPane.mockResolvedValue(NEW_PANE_ID);
+    await fixture.orchestrator.handleEvent(createdEvent(CHILD_B, PARENT_ID));
+    await fixture.orchestrator.handleEvent(activityEvent(CHILD_B));
+    expect(fixture.registry.get(CHILD_B)?.state).toBe("attached");
+  });
+
+  it("keeps the orchestrator responsive when a queued close throws", async () => {
+    const fixture = createFixture();
+    fixture.closePane.mockRejectedValue(new Error("herdr exploded"));
+    await attachChild(fixture);
+
+    await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+
+    expect(fixture.registry.get(CHILD_ID)).toMatchObject({
+      state: "failed",
+      failureReason: "close_failed",
+    });
+
+    // A later close still goes through the queue normally.
+    fixture.closePane.mockResolvedValue(true);
+    await fixture.orchestrator.handleEvent(deletedEvent("ses_unknown"));
+    expect(fixture.closePane).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects queued work gracefully after dispose", async () => {
+    const fixture = createFixture();
+    await registerOwnedChild(fixture);
+    await fixture.orchestrator.dispose();
+
+    await expect(
+      fixture.orchestrator.handleEvent(activityEvent(CHILD_ID)),
+    ).resolves.toBeUndefined();
+    expect(fixture.splitPane).not.toHaveBeenCalled();
+    expect(fixture.registry.get(CHILD_ID)?.state).toBe("waiting_activity");
+  });
 });
