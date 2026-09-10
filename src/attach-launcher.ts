@@ -41,10 +41,51 @@ export function buildAttachCommand(input: AttachInput): string {
   return `opencode attach ${quoteShell(url)} --session ${quoteShell(input.sessionId)} --dir ${quoteShell(input.directory)}`;
 }
 
+function shellWordEnd(command: string, start: number): number {
+  let inSingleQuotes = false;
+
+  for (let index = start; index < command.length; index += 1) {
+    const character = command[index];
+    if (character === "'") {
+      inSingleQuotes = !inSingleQuotes;
+      continue;
+    }
+    if (character === "\\" && !inSingleQuotes) {
+      index += 1;
+      continue;
+    }
+    if (!inSingleQuotes && character === " ") {
+      return index;
+    }
+  }
+  return command.length;
+}
+
 export function redactAttachCommand(command: string): string {
-  return command.replace(/([A-Za-z_][A-Za-z0-9_]*)=(?:'[^']*'|\S*)/g, (_match, key: string) => {
-    return `${key}=${quoteShell(REDACTED)}`;
-  });
+  let redacted = command;
+  let cursor = 0;
+  const redactedValue = quoteShell(REDACTED);
+
+  while (cursor < redacted.length) {
+    const equalsIndex = redacted.indexOf("=", cursor);
+    if (equalsIndex < 0) {
+      return redacted;
+    }
+    const key = redacted.slice(cursor, equalsIndex);
+    if (!AUTH_ENV_KEYS.some((authKey) => authKey === key)) {
+      return redacted;
+    }
+
+    const valueStart = equalsIndex + 1;
+    const valueEnd = shellWordEnd(redacted, valueStart);
+    redacted = `${redacted.slice(0, valueStart)}${redactedValue}${redacted.slice(valueEnd)}`;
+    cursor = valueStart + redactedValue.length;
+    if (redacted[cursor] === " ") {
+      cursor += 1;
+    }
+  }
+
+  return redacted;
 }
 
 function authEnvAssignments(env: NodeJS.ProcessEnv = process.env): readonly string[] {

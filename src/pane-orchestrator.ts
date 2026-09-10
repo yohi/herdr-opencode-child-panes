@@ -148,7 +148,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
     const session = registry.get(sessionId);
-    if (!session || session.state !== "waiting_activity") {
+    if (session?.state !== "waiting_activity") {
       return;
     }
     await spawnChild(session);
@@ -186,7 +186,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     const session = registry.get(sessionId);
     // Only attached sessions go idle; duplicate idles are no-ops. Timer
     // scheduling for the grace period lands in PR3.
-    if (!session || session.state !== "attached") {
+    if (session?.state !== "attached") {
       return;
     }
     registry.transitionTo(sessionId, "idle_pending");

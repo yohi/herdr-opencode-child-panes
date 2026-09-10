@@ -110,6 +110,14 @@ describe("redactAttachCommand", () => {
 
     expect(redactAttachCommand(command)).toBe(command);
   });
+
+  it("redacts credentials containing shell quotes completely", () => {
+    const command = `OPENCODE_SERVER_PASSWORD=${quoteShell("secret'with-quote")} opencode attach`;
+
+    expect(redactAttachCommand(command)).toBe(
+      `OPENCODE_SERVER_PASSWORD=${quoteShell(REDACTED)} opencode attach`,
+    );
+  });
 });
 
 describe("createAttachLauncher", () => {
