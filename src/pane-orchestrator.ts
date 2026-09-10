@@ -1,4 +1,5 @@
 import type { Event } from "@opencode-ai/sdk";
+import { createAsyncQueue } from "./async-queue.js";
 import type { AttachLauncher } from "./attach-launcher.js";
 import type { ChildSession, ChildSessionRegistry } from "./child-session.js";
 import { resolvePaneLayoutDirection } from "./direction-policy.js";
@@ -15,6 +16,10 @@ const ACTIVE_STATUS_TYPES = new Set<string>(["active", "working", "busy", "runni
  * Drives the child pane lifecycle from OpenCode events: registers owned child
  * sessions, splits the caller pane on the first meaningful activity, attaches
  * the child session into the new pane, and closes panes when sessions die.
+ *
+ * Pane splits and closes are serialized through an async queue so concurrent
+ * events cannot interleave Herdr mutations, and a failed mutation never
+ * blocks the mutations queued behind it.
  */
 export interface PaneOrchestrator {
   handleEvent(event: Event): Promise<void>;
@@ -67,6 +72,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const registry = options.registry;
   const attachLauncher = options.attachLauncher;
   const logger = options.logger;
+  const queue = createAsyncQueue();
 
   function fail(sessionId: string, reason: string): void {
     registry.setFailureReason(sessionId, reason);
@@ -76,26 +82,22 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
 
   /**
    * Split the caller pane, attach the child session, and record the new pane.
-   * The `spawning` transition happens synchronously before any `await`, so a
-   * second activity event racing the split observes `spawning` and skips.
+   * Runs inside the serialized queue; the `spawning` transition happened
+   * synchronously at enqueue time, so this only mutates Herdr when the
+   * session is still claimed by this spawn.
    */
-  async function spawnChild(session: ChildSession): Promise<void> {
-    const transitioned = registry.transitionTo(session.sessionId, "spawning");
-    if (!transitioned) {
-      return;
-    }
-
+  async function runSpawn(sessionId: string): Promise<void> {
     const layout = config.direction === "auto" ? await herdrClient.getPaneLayout(paneId) : null;
     const direction = resolvePaneLayoutDirection({ direction: config.direction, layout });
     const newPaneId = await herdrClient.splitPane({ paneId, direction, noFocus: true });
     if (newPaneId === null) {
-      fail(session.sessionId, "split_failed");
+      fail(sessionId, "split_failed");
       return;
     }
 
     const attached = await attachLauncher.attach({
       paneId: newPaneId,
-      sessionId: session.sessionId,
+      sessionId,
       serverUrl,
       directory,
     });
@@ -103,13 +105,83 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       // Only the freshly created pane may be rolled back; the child session
       // itself is never touched.
       await herdrClient.closePane(newPaneId);
-      fail(session.sessionId, "attach_failed");
+      fail(sessionId, "attach_failed");
       return;
     }
 
-    registry.setPaneId(session.sessionId, newPaneId);
-    registry.transitionTo(session.sessionId, "attached");
-    logger.info("Child pane attached", { sessionId: session.sessionId, paneId: newPaneId });
+    registry.setPaneId(sessionId, newPaneId);
+    registry.transitionTo(sessionId, "attached");
+    logger.info("Child pane attached", { sessionId, paneId: newPaneId });
+  }
+
+  /**
+   * Claim the session for a spawn and queue the Herdr work. The synchronous
+   * `spawning` transition is the idempotency gate: concurrent activity events
+   * observe it and skip, so at most one split is ever queued per session.
+   */
+  function enqueueSpawn(session: ChildSession): Promise<void> {
+    return queue
+      .enqueue(async () => {
+        const current = registry.get(session.sessionId);
+        if (!current || current.state !== "waiting_activity") {
+          return;
+        }
+        if (!registry.transitionTo(current.sessionId, "spawning")) {
+          return;
+        }
+        await runSpawn(current.sessionId);
+      })
+      .catch((error: unknown) => {
+        logger.error("Unhandled error while spawning child pane", {
+          sessionId: session.sessionId,
+          error,
+        });
+        const current = registry.get(session.sessionId);
+        if (current?.state === "spawning") {
+          fail(current.sessionId, "spawn_failed");
+        }
+      });
+  }
+
+  /**
+   * Queue the Herdr close for an already-`closing` session. Sessions without
+   * an owned pane transition straight to `closed` without touching Herdr.
+   */
+  function enqueueClose(session: ChildSession): Promise<void> {
+    const childPaneId = session.paneId;
+    if (childPaneId === undefined || childPaneId === paneId) {
+      // Nothing to clean up, or the only known pane is the caller pane itself.
+      registry.transitionTo(session.sessionId, "closed");
+      return Promise.resolve();
+    }
+    return queue
+      .enqueue(async () => {
+        const current = registry.get(session.sessionId);
+        if (!current || current.state !== "closing") {
+          return;
+        }
+        const closed = await herdrClient.closePane(childPaneId);
+        if (closed) {
+          registry.transitionTo(current.sessionId, "closed");
+          logger.info("Child pane closed", {
+            sessionId: current.sessionId,
+            paneId: childPaneId,
+          });
+          return;
+        }
+        fail(current.sessionId, "close_failed");
+      })
+      .catch((error: unknown) => {
+        logger.error("Unhandled error while closing child pane", {
+          sessionId: session.sessionId,
+          paneId: childPaneId,
+          error,
+        });
+        const current = registry.get(session.sessionId);
+        if (current?.state === "closing") {
+          fail(current.sessionId, "close_failed");
+        }
+      });
   }
 
   async function handleSessionCreated(event: Event): Promise<void> {
@@ -147,7 +219,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!session || session.state !== "waiting_activity") {
       return;
     }
-    await spawnChild(session);
+    await enqueueSpawn(session);
   }
 
   async function handleActivity(event: Event): Promise<void> {
@@ -202,21 +274,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!registry.transitionTo(sessionId, "closing")) {
       return;
     }
-
-    const childPaneId = session.paneId;
-    if (childPaneId === undefined || childPaneId === paneId) {
-      // Nothing to clean up, or the only known pane is the caller pane itself.
-      registry.transitionTo(sessionId, "closed");
-      return;
-    }
-
-    const closed = await herdrClient.closePane(childPaneId);
-    if (closed) {
-      registry.transitionTo(sessionId, "closed");
-      logger.info("Child pane closed", { sessionId, paneId: childPaneId });
-      return;
-    }
-    fail(sessionId, "close_failed");
+    await enqueueClose(session);
   }
 
   async function handleEvent(event: Event): Promise<void> {
@@ -246,7 +304,8 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   return {
     handleEvent,
     dispose: async () => {
-      // Idle-timer teardown lands in PR3; nothing to release yet.
+      // Idle-timer teardown lands in PR3; release the queue for now.
+      queue.dispose();
     },
   };
 }
