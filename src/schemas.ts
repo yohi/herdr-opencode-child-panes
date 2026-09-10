@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-export const directionSchema = z.enum(["auto", "horizontal", "vertical"]);
+export const directionSchema = z.enum(["auto", "right", "down"]);
+export const paneLayoutDirectionSchema = z.enum(["right", "down"]);
 
 export const agentSessionSchema = z.object({
   agent: z.string().min(1),
@@ -12,15 +13,38 @@ export const paneInfoSchema = z.object({
   agent_session: agentSessionSchema.optional(),
 });
 
-const paneLayoutChildSchema = z.object({
+const paneLayoutAreaSchema = z.object({
+  width: z.number().int().nonnegative(),
+  height: z.number().int().nonnegative(),
+});
+
+const paneLayoutPaneSchema = z.object({
+  pane_id: z.string().min(1),
+  focused: z.boolean(),
+  rect: paneLayoutAreaSchema.extend({
+    x: z.number().int().nonnegative(),
+    y: z.number().int().nonnegative(),
+  }),
+});
+
+const paneLayoutSplitSchema = z.object({
   id: z.string().min(1),
-  direction: directionSchema.optional(),
+  direction: paneLayoutDirectionSchema,
+  ratio: z.number(),
+  rect: paneLayoutAreaSchema.extend({
+    x: z.number().int().nonnegative(),
+    y: z.number().int().nonnegative(),
+  }),
 });
 
 export const paneLayoutSchema = z.object({
-  paneId: z.string().min(1),
-  direction: directionSchema.optional(),
-  children: z.array(paneLayoutChildSchema).optional(),
+  result: z.object({
+    layout: z.object({
+      area: paneLayoutAreaSchema,
+      panes: z.array(paneLayoutPaneSchema),
+      splits: z.array(paneLayoutSplitSchema),
+    }),
+  }),
 });
 
 export const splitPaneResponseSchema = z.object({
@@ -72,6 +96,6 @@ export const messagePartDeltaPropertiesSchema = z.object({
 export type AgentSessionSchemaOutput = z.infer<typeof agentSessionSchema>;
 
 export type DirectionSchemaOutput = z.infer<typeof directionSchema>;
+export type PaneLayoutDirectionSchemaOutput = z.infer<typeof paneLayoutDirectionSchema>;
 export type PaneInfoSchemaOutput = z.infer<typeof paneInfoSchema>;
-export type PaneLayoutChildSchemaOutput = z.infer<typeof paneLayoutChildSchema>;
 export type PaneLayoutSchemaOutput = z.infer<typeof paneLayoutSchema>;

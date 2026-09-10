@@ -116,16 +116,37 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
     },
 
     async getPaneLayout(paneId: string): Promise<PaneLayout | null> {
-      return runJson(["pane", "layout", "--pane", paneId], paneLayoutSchema);
+      const response = await runJson(["pane", "layout", "--pane", paneId], paneLayoutSchema);
+      if (!response) {
+        return null;
+      }
+      const layout = response.result.layout;
+      const pane = layout.panes.find((candidate) => candidate.pane_id === paneId);
+      if (!pane) {
+        return null;
+      }
+      const direction = layout.splits[0]?.direction;
+      return {
+        paneId,
+        width: pane.rect.width,
+        height: pane.rect.height,
+        ...(direction === undefined ? {} : { direction }),
+      };
     },
 
     async splitPane(input: SplitPaneInput): Promise<string | null> {
       const argv = ["pane", "split", "--pane", input.paneId];
-      if (input.direction !== undefined) {
+      if (input.direction !== undefined && input.direction !== "auto") {
         argv.push("--direction", input.direction);
       }
       if (input.command !== undefined) {
         argv.push("--command", input.command);
+      }
+      for (const [key, value] of Object.entries(input.env ?? {})) {
+        argv.push("--env", `${key}=${value}`);
+      }
+      if (input.noFocus) {
+        argv.push("--no-focus");
       }
       const result = await runJson(argv, splitPaneResponseSchema);
       return result?.id ?? null;

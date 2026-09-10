@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { type Runner, createHerdrClient, subcommandName } from "../src/herdr-client.js";
+import { type Runner, createHerdrClient } from "../src/herdr-client.js";
 import type { Logger } from "../src/logger.js";
-import type { Direction } from "../src/types.js";
 
 const mockRunner = vi.fn<Runner>();
 
@@ -22,20 +21,6 @@ function createMockLogger(): Logger {
     error: vi.fn(),
   };
 }
-
-describe("subcommandName", () => {
-  it("includes the namespace for a command with two argv entries", () => {
-    expect(subcommandName(["pane", "list"])).toBe("pane list");
-  });
-
-  it("uses the only argv entry for a single-element command", () => {
-    expect(subcommandName(["pane"])).toBe("pane");
-  });
-
-  it("falls back to herdr for an empty command", () => {
-    expect(subcommandName([])).toBe("herdr");
-  });
-});
 
 describe("createHerdrClient", () => {
   beforeEach(() => {
@@ -139,23 +124,46 @@ describe("createHerdrClient", () => {
     it("returns parsed layout when herdr exits cleanly", async () => {
       mockRunnerStdout(
         JSON.stringify({
-          paneId: "pane-1",
-          direction: "horizontal" satisfies Direction,
-          children: [{ id: "pane-2" }],
+          result: {
+            layout: {
+              area: { width: 160, height: 48 },
+              panes: [
+                {
+                  pane_id: "pane-1",
+                  focused: true,
+                  rect: { x: 0, y: 0, width: 160, height: 48 },
+                },
+                {
+                  pane_id: "pane-2",
+                  focused: false,
+                  rect: { x: 80, y: 0, width: 80, height: 120 },
+                },
+              ],
+              splits: [
+                {
+                  id: "split-1",
+                  direction: "right",
+                  ratio: 0.5,
+                  rect: { x: 0, y: 0, width: 160, height: 48 },
+                },
+              ],
+            },
+          },
         }),
       );
       const client = createHerdrClient({ runner: mockRunner });
 
-      const result = await client.getPaneLayout("pane-1");
+      const result = await client.getPaneLayout("pane-2");
 
       expect(result).toEqual({
-        paneId: "pane-1",
-        direction: "horizontal",
-        children: [{ id: "pane-2" }],
+        paneId: "pane-2",
+        direction: "right",
+        width: 80,
+        height: 120,
       });
       expect(mockRunner).toHaveBeenCalledWith(
         "herdr",
-        ["pane", "layout", "--pane", "pane-1"],
+        ["pane", "layout", "--pane", "pane-2"],
         5000,
       );
     });
@@ -177,6 +185,31 @@ describe("createHerdrClient", () => {
 
       expect(result).toBeNull();
     });
+
+    it("returns null when the requested pane is absent from the layout", async () => {
+      mockRunnerStdout(
+        JSON.stringify({
+          result: {
+            layout: {
+              area: { width: 160, height: 48 },
+              panes: [
+                {
+                  pane_id: "pane-1",
+                  focused: true,
+                  rect: { x: 0, y: 0, width: 160, height: 48 },
+                },
+              ],
+              splits: [],
+            },
+          },
+        }),
+      );
+      const client = createHerdrClient({ runner: mockRunner });
+
+      const result = await client.getPaneLayout("pane-missing");
+
+      expect(result).toBeNull();
+    });
   });
 
   describe("splitPane", () => {
@@ -195,13 +228,55 @@ describe("createHerdrClient", () => {
 
       await client.splitPane({
         paneId: "pane-1",
-        direction: "vertical",
+        direction: "down",
         command: "vim",
+        noFocus: true,
       });
 
       expect(mockRunner).toHaveBeenCalledWith(
         "herdr",
-        ["pane", "split", "--pane", "pane-1", "--direction", "vertical", "--command", "vim"],
+        [
+          "pane",
+          "split",
+          "--pane",
+          "pane-1",
+          "--direction",
+          "down",
+          "--command",
+          "vim",
+          "--no-focus",
+        ],
+        5000,
+      );
+    });
+
+    it("passes environment values through the pane split API", async () => {
+      mockRunnerStdout(JSON.stringify({ id: "pane-2" }));
+      const client = createHerdrClient({ runner: mockRunner });
+
+      await client.splitPane({
+        paneId: "pane-1",
+        direction: "right",
+        env: {
+          OPENCODE_SERVER_PASSWORD: "s3cret-password",
+          OPENCODE_SERVER_USERNAME: "s3cret-user",
+        },
+      });
+
+      expect(mockRunner).toHaveBeenCalledWith(
+        "herdr",
+        [
+          "pane",
+          "split",
+          "--pane",
+          "pane-1",
+          "--direction",
+          "right",
+          "--env",
+          "OPENCODE_SERVER_PASSWORD=s3cret-password",
+          "--env",
+          "OPENCODE_SERVER_USERNAME=s3cret-user",
+        ],
         5000,
       );
     });

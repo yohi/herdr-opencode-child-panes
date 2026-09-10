@@ -30,6 +30,7 @@ export async function createTestPluginHooks(options: HarnessOptions = {}): Promi
   const hooks = await herdrChildPanesPlugin(
     {
       serverUrl: new URL("http://localhost:3000"),
+      directory: process.cwd(),
     } as never,
     { registry, herdrClient },
   );
