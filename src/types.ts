@@ -1,14 +1,15 @@
 import type {
   DirectionSchemaOutput,
   PaneInfoSchemaOutput,
-  PaneLayoutChildSchemaOutput,
-  PaneLayoutSchemaOutput,
+  PaneLayoutDirectionSchemaOutput,
 } from "./schemas.js";
 
 /**
  * Herdr pane layout direction.
  */
 export type Direction = DirectionSchemaOutput;
+
+export type PaneLayoutDirection = PaneLayoutDirectionSchemaOutput;
 
 /**
  * Parsed plugin configuration.
@@ -48,18 +49,14 @@ export interface RuntimePrerequisites {
 export type PaneInfo = Readonly<PaneInfoSchemaOutput>;
 
 /**
- * A child entry in a pane layout response.
- */
-export type PaneLayoutChild = Readonly<PaneLayoutChildSchemaOutput>;
-
-/**
  * Pane layout information returned by `herdr pane layout`.
  */
-export type PaneLayout = Readonly<
-  Omit<PaneLayoutSchemaOutput, "children"> & {
-    children?: readonly PaneLayoutChild[];
-  }
->;
+export interface PaneLayout {
+  readonly paneId: string;
+  readonly direction?: PaneLayoutDirection;
+  readonly width?: number;
+  readonly height?: number;
+}
 
 /**
  * Input for splitting an existing pane.
@@ -68,6 +65,7 @@ export interface SplitPaneInput {
   readonly paneId: string;
   readonly direction?: Direction;
   readonly command?: string;
+  readonly noFocus?: boolean;
 }
 
 /**
@@ -84,3 +82,11 @@ export interface HerdrClient {
   runInPane(paneId: string, command: string): Promise<boolean>;
   closePane(paneId: string): Promise<boolean>;
 }
+
+export type {
+  ChildSession,
+  ChildSessionRegistry,
+  ChildSessionState,
+} from "./child-session.js";
+export type { ChildOwnershipResolver } from "./ownership-resolver.js";
+export type { ResolvedSessionId } from "./event-resolver.js";
