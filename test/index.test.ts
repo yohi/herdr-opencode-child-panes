@@ -10,7 +10,12 @@ function asPluginEvent<T>(type: string, properties: T) {
 }
 
 describe("herdrChildPanesPlugin", () => {
-  const ENV_KEYS = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_CHILD_PANES"] as const;
+  const ENV_KEYS = [
+    "HERDR_ENV",
+    "HERDR_PANE_ID",
+    "HERDR_CHILD_PANES",
+    "HERDR_CHILD_PANES_IDLE_MS",
+  ] as const;
 
   beforeEach(() => {
     for (const key of ENV_KEYS) {
@@ -37,20 +42,6 @@ describe("herdrChildPanesPlugin", () => {
 
     expect(hooks).toEqual({});
   });
-  it("exports the plugin as the default and as a named export", () => {
-    expect(namedPlugin).toBe(herdrChildPanesPlugin);
-  });
-
-  it("returns empty hooks when runtime prerequisites are not satisfied", async () => {
-    process.env.HERDR_CHILD_PANES = "false";
-
-    const hooks = await herdrChildPanesPlugin({
-      serverUrl: undefined,
-    } as Parameters<typeof herdrChildPanesPlugin>[0]);
-
-    expect(hooks).toEqual({});
-  });
-
   it("logs only the server URL origin when the plugin activates", async () => {
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     process.env.HERDR_ENV = "1";
@@ -111,6 +102,19 @@ describe("herdrChildPanesPlugin", () => {
     });
   });
 
+  it("provides event and dispose hooks when runtime prerequisites are met", async () => {
+    // Given: the plugin runs in a configured Herdr pane.
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_PANE_ID = "pane-1";
+
+    // When: the plugin is initialized.
+    const harness = await createTestPluginHooks();
+
+    // Then: OpenCode receives both lifecycle hooks.
+    expect(harness.hooks.event).toEqual(expect.any(Function));
+    expect(harness.hooks.dispose).toEqual(expect.any(Function));
+  });
+
   it("runs the full child pane lifecycle from creation to close", async () => {
     process.env.HERDR_ENV = "1";
     process.env.HERDR_PANE_ID = "pane-1";
@@ -141,6 +145,7 @@ describe("herdrChildPanesPlugin", () => {
       event: asPluginEvent("message.part.updated", { part: { sessionID: "ses_child1" } }),
     });
     expect(splitPane).toHaveBeenCalledWith({ paneId: "pane-1", direction: "right", noFocus: true });
+    expect(runInPane).toHaveBeenCalledTimes(1);
     expect(harness.registry.get("ses_child1")).toMatchObject({
       state: "attached",
       paneId: "pane-2",
@@ -176,5 +181,51 @@ describe("herdrChildPanesPlugin", () => {
     });
 
     expect(harness.registry.has("ses_other")).toBe(false);
+  });
+
+  it("cancels idle cleanup on dispose without closing an attached pane", async () => {
+    // Given: an attached child has entered its idle grace period.
+    vi.useFakeTimers();
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_PANE_ID = "pane-1";
+    process.env.HERDR_CHILD_PANES_IDLE_MS = "1";
+    const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
+      id: "pane-1",
+      agent_session: { agent: "opencode", session_id: "ses_root123" },
+    });
+    const getPaneLayout = vi.fn<HerdrClient["getPaneLayout"]>().mockResolvedValue({
+      paneId: "pane-1",
+      width: 200,
+      height: 50,
+    });
+    const splitPane = vi.fn<HerdrClient["splitPane"]>().mockResolvedValue("pane-2");
+    const runInPane = vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true);
+    const closePane = vi.fn<HerdrClient["closePane"]>().mockResolvedValue(true);
+    const client = { getPane, getPaneLayout, splitPane, runInPane, closePane } as HerdrClient;
+    const harness = await createTestPluginHooks({ herdrClient: client });
+
+    try {
+      await harness.hooks.event?.({
+        event: asPluginEvent("session.created", {
+          info: { id: "ses_child1", parentID: "ses_root123" },
+        }),
+      });
+      await harness.hooks.event?.({
+        event: asPluginEvent("message.part.updated", { part: { sessionID: "ses_child1" } }),
+      });
+      await harness.hooks.event?.({
+        event: asPluginEvent("session.idle", { sessionID: "ses_child1" }),
+      });
+
+      // When: OpenCode disposes the plugin before the idle grace period expires.
+      await harness.hooks.dispose?.();
+      await vi.advanceTimersByTimeAsync(1);
+
+      // Then: the attached pane is preserved and its pending close cannot run.
+      expect(closePane).not.toHaveBeenCalled();
+      expect(harness.registry.get("ses_child1")?.state).toBe("idle_pending");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
