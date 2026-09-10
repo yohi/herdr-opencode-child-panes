@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { type Runner, createHerdrClient } from "../src/herdr-client.js";
+import { type Runner, createHerdrClient, subcommandName } from "../src/herdr-client.js";
 import type { Logger } from "../src/logger.js";
+import type { Direction } from "../src/types.js";
 
 const mockRunner = vi.fn<Runner>();
 
@@ -21,6 +22,20 @@ function createMockLogger(): Logger {
     error: vi.fn(),
   };
 }
+
+describe("subcommandName", () => {
+  it("includes the namespace for a command with two argv entries", () => {
+    expect(subcommandName(["pane", "list"])).toBe("pane list");
+  });
+
+  it("uses the only argv entry for a single-element command", () => {
+    expect(subcommandName(["pane"])).toBe("pane");
+  });
+
+  it("falls back to herdr for an empty command", () => {
+    expect(subcommandName([])).toBe("herdr");
+  });
+});
 
 describe("createHerdrClient", () => {
   beforeEach(() => {
@@ -124,26 +139,9 @@ describe("createHerdrClient", () => {
     it("returns parsed layout when herdr exits cleanly", async () => {
       mockRunnerStdout(
         JSON.stringify({
-          result: {
-            layout: {
-              area: { width: 160, height: 48 },
-              panes: [
-                {
-                  pane_id: "pane-1",
-                  focused: true,
-                  rect: { x: 0, y: 0, width: 160, height: 48 },
-                },
-              ],
-              splits: [
-                {
-                  id: "split-1",
-                  direction: "right",
-                  ratio: 0.5,
-                  rect: { x: 0, y: 0, width: 160, height: 48 },
-                },
-              ],
-            },
-          },
+          paneId: "pane-1",
+          direction: "horizontal" satisfies Direction,
+          children: [{ id: "pane-2" }],
         }),
       );
       const client = createHerdrClient({ runner: mockRunner });
@@ -152,9 +150,8 @@ describe("createHerdrClient", () => {
 
       expect(result).toEqual({
         paneId: "pane-1",
-        direction: "right",
-        width: 160,
-        height: 48,
+        direction: "horizontal",
+        children: [{ id: "pane-2" }],
       });
       expect(mockRunner).toHaveBeenCalledWith(
         "herdr",
@@ -198,24 +195,13 @@ describe("createHerdrClient", () => {
 
       await client.splitPane({
         paneId: "pane-1",
-        direction: "down",
+        direction: "vertical",
         command: "vim",
-        noFocus: true,
       });
 
       expect(mockRunner).toHaveBeenCalledWith(
         "herdr",
-        [
-          "pane",
-          "split",
-          "--pane",
-          "pane-1",
-          "--direction",
-          "down",
-          "--command",
-          "vim",
-          "--no-focus",
-        ],
+        ["pane", "split", "--pane", "pane-1", "--direction", "vertical", "--command", "vim"],
         5000,
       );
     });
