@@ -579,8 +579,14 @@ describe("createPaneOrchestrator", () => {
 
     // A later close still goes through the queue normally.
     fixture.closePane.mockResolvedValue(true);
-    await fixture.orchestrator.handleEvent(deletedEvent("ses_unknown"));
+    const laterChildId = "ses_child_later";
+    await fixture.orchestrator.handleEvent(createdEvent(laterChildId, PARENT_ID));
+    await fixture.orchestrator.handleEvent(activityEvent(laterChildId));
+    fixture.closePane.mockClear();
+    await fixture.orchestrator.handleEvent(deletedEvent(laterChildId));
     expect(fixture.closePane).toHaveBeenCalledTimes(1);
+    expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+    expect(fixture.registry.get(laterChildId)?.state).toBe("closed");
   });
 
   it("rejects queued work gracefully after dispose", async () => {
