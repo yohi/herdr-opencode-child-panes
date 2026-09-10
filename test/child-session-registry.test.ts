@@ -112,9 +112,10 @@ describe("createChildSessionRegistry timers", () => {
     expect(registry.getTimer("child-2")).toBeUndefined();
   });
 
-  it("replaces the stored handle when a session sets another timer", () => {
+  it("cancels the old handle when a session replaces its timer", () => {
     // Given
-    const registry = createChildSessionRegistry();
+    const clearTimeoutFn = vi.fn();
+    const registry = createChildSessionRegistry({ clearTimeout: clearTimeoutFn });
     const first = setTimeout(() => {}, 1000);
     const second = setTimeout(() => {}, 2000);
 
@@ -124,6 +125,14 @@ describe("createChildSessionRegistry timers", () => {
 
     // Then
     expect(registry.getTimer("child-1")).toBe(second);
+    expect(clearTimeoutFn).toHaveBeenCalledTimes(1);
+    expect(clearTimeoutFn).toHaveBeenCalledWith(first);
+
+    registry.clearTimer("child-1");
+
+    expect(clearTimeoutFn).toHaveBeenCalledTimes(2);
+    expect(clearTimeoutFn).toHaveBeenLastCalledWith(second);
+    expect(registry.getTimer("child-1")).toBeUndefined();
   });
 
   it("cancels and forgets the timer on clearTimer", () => {
