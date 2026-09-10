@@ -28,6 +28,14 @@ export interface ChildSessionRegistry {
   setFailureReason(sessionId: string, reason: string): void;
   listActive(): readonly ChildSession[];
   listByState(state: ChildSessionState): readonly ChildSession[];
+  /** Store the pending timer handle for a session, replacing any previous one. */
+  setTimer(sessionId: string, timer: SessionTimer): void;
+  /** Return the pending timer handle for a session, if any. */
+  getTimer(sessionId: string): SessionTimer | undefined;
+  /** Cancel and forget the pending timer handle for a session; no-op if absent. */
+  clearTimer(sessionId: string): void;
+  /** Cancel and forget every pending timer handle. */
+  clearAllTimers(): void;
 }
 
 export const CHILD_SESSION_TRANSITIONS: Readonly<
@@ -45,4 +53,11 @@ export const CHILD_SESSION_TRANSITIONS: Readonly<
 
 export interface CreateChildSessionRegistryOptions {
   readonly now?: () => number;
+  /** Timer cancellation used by clearTimer/clearAllTimers. */
+  readonly clearTimeout?: typeof globalThis.clearTimeout;
 }
+
+/**
+ * Handle for a scheduled timer, as returned by `setTimeout`.
+ */
+export type SessionTimer = ReturnType<typeof setTimeout>;
