@@ -9,6 +9,12 @@ export { parseConfig, DEFAULT_CONFIG } from "./config.js";
 export { createLogger } from "./logger.js";
 export { createHerdrClient } from "./herdr-client.js";
 export type { CreateHerdrClientOptions } from "./herdr-client.js";
+export { createRootSessionResolver } from "./root-session-resolver.js";
+export type {
+  CreateRootSessionResolverOptions,
+  ResolvedRootSession,
+  RootSessionResolver,
+} from "./root-session-resolver.js";
 
 function checkPrerequisites(serverUrl: URL | undefined): RuntimePrerequisites {
   const herdrEnv = Boolean(process.env.HERDR_ENV);
