@@ -1,10 +1,13 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { createAttachLauncher } from "./attach-launcher.js";
 import { createChildSessionRegistry } from "./child-session-registry.js";
 import type { ChildSessionRegistry } from "./child-session.js";
 import { parseConfig } from "./config.js";
 import { createHerdrClient } from "./herdr-client.js";
 import { createLogger } from "./logger.js";
 import { createChildOwnershipResolver } from "./ownership-resolver.js";
+import { createPaneOrchestrator } from "./pane-orchestrator.js";
+import type { PaneOrchestrator } from "./pane-orchestrator.js";
 import { createRootSessionResolver } from "./root-session-resolver.js";
 import type { HerdrClient, RuntimePrerequisites } from "./types.js";
 
@@ -58,7 +61,7 @@ export interface PluginDependencies {
 }
 
 export const herdrChildPanesPlugin: Plugin = async (
-  { serverUrl },
+  { serverUrl, directory },
   options?: PluginDependencies,
 ) => {
   const config = parseConfig();
@@ -90,28 +93,25 @@ export const herdrChildPanesPlugin: Plugin = async (
     herdrClient,
   });
   const ownershipResolver = createChildOwnershipResolver({ rootSessionResolver, registry });
+  const attachLauncher = createAttachLauncher({ herdrClient, logger });
+  const paneOrchestrator: PaneOrchestrator = createPaneOrchestrator({
+    paneId,
+    serverUrl,
+    directory,
+    config,
+    herdrClient,
+    ownershipResolver,
+    registry,
+    attachLauncher,
+    logger,
+  });
 
   return {
     event: async ({ event }) => {
-      if (event.type !== "session.created") return;
-
-      const properties = event.properties;
-      const info = properties?.info;
-      if (!info?.id || !info.parentID) return;
-
-      const sessionId = info.id;
-      const parentId = info.parentID;
-      const owned = await ownershipResolver.isOwnedChild({ sessionId, parentId });
-      if (!owned) {
-        logger.debug("Child session not owned", { sessionId, parentId });
-        return;
-      }
-      const registered = registry.register(sessionId, parentId);
-      if (!registered) {
-        logger.debug("Child session already registered", { sessionId, parentId });
-        return;
-      }
-      logger.info("Child session registered", { sessionId, parentId });
+      await paneOrchestrator.handleEvent(event);
+    },
+    dispose: async () => {
+      await paneOrchestrator.dispose();
     },
   };
 };
