@@ -9,7 +9,7 @@ export const DEFAULT_CONFIG: HerdrChildPanesConfig = {
   debug: false,
 };
 
-const VALID_DIRECTIONS: Direction[] = ["auto", "horizontal", "vertical"];
+const VALID_DIRECTIONS: readonly Direction[] = ["auto", "right", "down"];
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
@@ -38,10 +38,7 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 function parseDirection(value: string | undefined, fallback: Direction): Direction {
   if (value === undefined) return fallback;
   const normalized = value.trim().toLowerCase();
-  if (VALID_DIRECTIONS.includes(normalized as Direction)) {
-    return normalized as Direction;
-  }
-  return fallback;
+  return VALID_DIRECTIONS.find((direction) => direction === normalized) ?? fallback;
 }
 
 /**
