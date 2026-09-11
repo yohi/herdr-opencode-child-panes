@@ -1,8 +1,14 @@
 import { execFile } from "node:child_process";
 import { z } from "zod";
 import type { Logger } from "./logger.js";
-import { paneInfoSchema, paneLayoutSchema, splitPaneResponseSchema } from "./schemas.js";
-import type { HerdrClient, PaneInfo, PaneLayout, SplitPaneInput } from "./types.js";
+import { paneInfoResponseSchema, paneLayoutSchema, splitPaneResponseSchema } from "./schemas.js";
+import type {
+  HerdrClient,
+  PaneInfo,
+  PaneLayout,
+  ResizePaneInput,
+  SplitPaneInput,
+} from "./types.js";
 
 const noopLogger: Logger = {
   debug: () => {},
@@ -112,7 +118,8 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
 
   return {
     async getPane(paneId: string): Promise<PaneInfo | null> {
-      return runJson(["pane", "get", paneId], paneInfoSchema);
+      const response = await runJson(["pane", "get", paneId], paneInfoResponseSchema);
+      return response?.result.pane ?? null;
     },
 
     async getPaneLayout(paneId: string): Promise<PaneLayout | null> {
@@ -139,6 +146,9 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
       if (input.direction !== undefined && input.direction !== "auto") {
         argv.push("--direction", input.direction);
       }
+      if (input.ratio !== undefined) {
+        argv.push("--ratio", String(input.ratio));
+      }
       if (input.command !== undefined) {
         argv.push("--command", input.command);
       }
@@ -149,7 +159,20 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
         argv.push("--no-focus");
       }
       const result = await runJson(argv, splitPaneResponseSchema);
-      return result?.id ?? null;
+      return result?.result.pane.pane_id ?? null;
+    },
+
+    async resizePane(input: ResizePaneInput): Promise<boolean> {
+      return runVoid([
+        "pane",
+        "resize",
+        "--pane",
+        input.paneId,
+        "--direction",
+        input.direction,
+        "--amount",
+        String(input.amount),
+      ]);
     },
 
     async runInPane(paneId: string, command: string): Promise<boolean> {

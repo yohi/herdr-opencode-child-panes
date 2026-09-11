@@ -12,6 +12,7 @@ function createMockClient(): HerdrClient {
     getPane: vi.fn(),
     getPaneLayout: vi.fn(),
     splitPane: vi.fn(),
+    resizePane: vi.fn(),
     runInPane: vi.fn(),
     closePane: vi.fn(),
   };
@@ -19,10 +20,10 @@ function createMockClient(): HerdrClient {
 
 function opencodePaneInfo(sessionId: string): PaneInfo {
   return {
-    id: PANE_ID,
+    pane_id: PANE_ID,
     agent_session: {
       agent: "opencode",
-      session_id: sessionId,
+      value: sessionId,
     },
   };
 }

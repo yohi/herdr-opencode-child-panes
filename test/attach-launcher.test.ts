@@ -19,6 +19,7 @@ interface LoggerSpies {
 }
 
 interface LauncherHarness {
+  readonly getPane: ReturnType<typeof vi.fn<HerdrClient["getPane"]>>;
   readonly runInPane: ReturnType<typeof vi.fn<HerdrClient["runInPane"]>>;
   readonly logger: LoggerSpies;
   readonly launcher: ReturnType<typeof createAttachLauncher>;
@@ -35,10 +36,15 @@ function createHarness(
   } else {
     runInPane.mockResolvedValue(runInPaneResult);
   }
+  const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
+    pane_id: "pane-2",
+    agent_session: { agent: "opencode", value: "ses_child1" },
+  });
   const client: HerdrClient = {
-    getPane: vi.fn(),
+    getPane,
     getPaneLayout: vi.fn(),
     splitPane: vi.fn(),
+    resizePane: vi.fn(),
     runInPane,
     closePane: vi.fn(),
   };
@@ -49,7 +55,7 @@ function createHarness(
     error: vi.fn(),
   };
   const launcher = createAttachLauncher({ herdrClient: client, logger, env });
-  return { runInPane, logger, launcher, launch: launcher.attach };
+  return { getPane, runInPane, logger, launcher, launch: launcher.attach };
 }
 
 function secretEnv(): NodeJS.ProcessEnv {
@@ -246,6 +252,43 @@ describe("createAttachLauncher", () => {
           "opencode attach 'https://example.test:8443/' --session 'ses_child1' --dir 'workspace/repo'",
       }),
     );
+  });
+
+  it("polls for OpenCode without resending the attach command", async () => {
+    const harness = createHarness(true);
+    harness.getPane.mockResolvedValueOnce({ pane_id: "pane-2" }).mockResolvedValue({
+      pane_id: "pane-2",
+      agent_session: { agent: "opencode", value: "ses_child1" },
+    });
+
+    const attached = await harness.launch({
+      paneId: "pane-2",
+      sessionId: "ses_child1",
+      serverUrl: new URL("https://example.test:8443"),
+      directory: "workspace/repo",
+    });
+
+    expect(attached).toBe(true);
+    expect(harness.getPane).toHaveBeenCalledTimes(2);
+    expect(harness.runInPane).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a pane identified by its top-level agent", async () => {
+    const harness = createHarness(true);
+    harness.getPane.mockResolvedValue({
+      pane_id: "pane-2",
+      agent: "opencode",
+    });
+
+    const attached = await harness.launch({
+      paneId: "pane-2",
+      sessionId: "ses_child1",
+      serverUrl: new URL("https://example.test:8443"),
+      directory: "workspace/repo",
+    });
+
+    expect(attached).toBe(true);
+    expect(harness.getPane).toHaveBeenCalledTimes(1);
   });
 
   it("returns false when the pane run reports failure", async () => {

@@ -7,6 +7,7 @@ import type {
   ChildSessionRegistry,
   CreateChildSessionRegistryOptions,
 } from "../src/child-session.js";
+import type { Logger } from "../src/logger.js";
 import type { ChildOwnershipResolver } from "../src/ownership-resolver.js";
 import {
   type CreatePaneOrchestratorOptions,
@@ -61,9 +62,11 @@ interface Fixture {
   readonly registry: ChildSessionRegistry;
   readonly getPaneLayout: Mock<HerdrClient["getPaneLayout"]>;
   readonly splitPane: Mock<HerdrClient["splitPane"]>;
+  readonly resizePane: Mock<HerdrClient["resizePane"]>;
   readonly closePane: Mock<HerdrClient["closePane"]>;
   readonly attach: Mock<AttachLauncher["attach"]>;
   readonly isOwnedChild: Mock<ChildOwnershipResolver["isOwnedChild"]>;
+  readonly debug: Mock<Logger["debug"]>;
 }
 
 interface FixtureOptions {
@@ -93,6 +96,7 @@ function createFixture(
       height: 50,
     }),
     splitPane: vi.fn<HerdrClient["splitPane"]>().mockResolvedValue(NEW_PANE_ID),
+    resizePane: vi.fn<HerdrClient["resizePane"]>().mockResolvedValue(true),
     runInPane: vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true),
     closePane: vi.fn<HerdrClient["closePane"]>().mockResolvedValue(true),
   };
@@ -129,9 +133,11 @@ function createFixture(
     registry,
     getPaneLayout: herdrClient.getPaneLayout as Mock<HerdrClient["getPaneLayout"]>,
     splitPane: herdrClient.splitPane as Mock<HerdrClient["splitPane"]>,
+    resizePane: herdrClient.resizePane as Mock<HerdrClient["resizePane"]>,
     closePane: herdrClient.closePane as Mock<HerdrClient["closePane"]>,
     attach: attachLauncher.attach as Mock<AttachLauncher["attach"]>,
     isOwnedChild: ownershipResolver.isOwnedChild as Mock<ChildOwnershipResolver["isOwnedChild"]>,
+    debug: logger.debug as Mock<Logger["debug"]>,
   };
 }
 
@@ -139,9 +145,45 @@ async function registerOwnedChild(fixture: Fixture): Promise<void> {
   await fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
 }
 
+async function registerChild(fixture: Fixture, sessionId: string): Promise<void> {
+  await fixture.orchestrator.handleEvent(createdEvent(sessionId, PARENT_ID));
+}
+
 async function attachChild(fixture: Fixture): Promise<void> {
   await registerOwnedChild(fixture);
   await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+}
+
+async function attachChildById(fixture: Fixture, sessionId: string): Promise<void> {
+  await registerChild(fixture, sessionId);
+  await fixture.orchestrator.handleEvent(activityEvent(sessionId));
+}
+
+async function startDelayedAttachAndIdle(fixture: Fixture): Promise<{
+  readonly releaseAttach: (attached: boolean) => void;
+  readonly spawning: Promise<void>;
+}> {
+  let resolveAttach: ((attached: boolean) => void) | undefined;
+  const attachStarted = new Promise<void>((resolve) => {
+    fixture.attach.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolveAttachPromise) => {
+          resolveAttach = resolveAttachPromise;
+          resolve();
+        }),
+    );
+  });
+
+  await registerOwnedChild(fixture);
+  const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+  await attachStarted;
+
+  await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "idle"));
+
+  return {
+    releaseAttach: (attached) => resolveAttach?.(attached),
+    spawning,
+  };
 }
 
 describe("createPaneOrchestrator", () => {
@@ -165,6 +207,7 @@ describe("createPaneOrchestrator", () => {
     expect(fixture.splitPane).toHaveBeenCalledWith({
       paneId: CALLER_PANE_ID,
       direction: "right",
+      ratio: 2 / 3,
       noFocus: true,
     });
     expect(fixture.attach).toHaveBeenCalledTimes(1);
@@ -195,6 +238,7 @@ describe("createPaneOrchestrator", () => {
     expect(fixture.splitPane).toHaveBeenCalledWith({
       paneId: CALLER_PANE_ID,
       direction: "right",
+      ratio: 2 / 3,
       noFocus: true,
       env: {
         OPENCODE_SERVER_PASSWORD: "s3cret-password",
@@ -212,7 +256,7 @@ describe("createPaneOrchestrator", () => {
     expect(fixture.splitPane).toHaveBeenCalledTimes(1);
   });
 
-  it("passes the configured direction and skips the layout probe", async () => {
+  it("uses the fixed root layout regardless of configured direction", async () => {
     const fixture = createFixture({ direction: "down" });
     await registerOwnedChild(fixture);
 
@@ -221,25 +265,96 @@ describe("createPaneOrchestrator", () => {
     expect(fixture.getPaneLayout).not.toHaveBeenCalled();
     expect(fixture.splitPane).toHaveBeenCalledWith({
       paneId: CALLER_PANE_ID,
-      direction: "down",
+      direction: "right",
+      ratio: 2 / 3,
       noFocus: true,
     });
   });
 
-  it("resolves the auto direction from the caller pane layout", async () => {
+  it("splits the second child below the first child", async () => {
     const fixture = createFixture();
-    fixture.getPaneLayout.mockResolvedValue({
-      paneId: CALLER_PANE_ID,
-      width: 40,
-      height: 120,
-    });
-    await registerOwnedChild(fixture);
+    const paneIds = ["pane-2", "pane-3"];
+    let splitIndex = 0;
+    fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
 
-    await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+    await attachChild(fixture);
+    await attachChildById(fixture, "ses_child2");
 
-    expect(fixture.splitPane).toHaveBeenCalledWith({
-      paneId: CALLER_PANE_ID,
+    expect(fixture.splitPane).toHaveBeenNthCalledWith(2, {
+      paneId: "pane-2",
       direction: "down",
+      ratio: 0.5,
+      noFocus: true,
+    });
+    expect(fixture.resizePane).not.toHaveBeenCalled();
+  });
+
+  it("rebalances the right column when the third child is attached", async () => {
+    const fixture = createFixture();
+    const paneIds = ["pane-2", "pane-3", "pane-4"];
+    let splitIndex = 0;
+    fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+    await attachChild(fixture);
+    await attachChildById(fixture, "ses_child2");
+    await attachChildById(fixture, "ses_child3");
+
+    expect(fixture.splitPane).toHaveBeenNthCalledWith(3, {
+      paneId: "pane-3",
+      direction: "down",
+      ratio: 0.5,
+      noFocus: true,
+    });
+    expect(fixture.resizePane).toHaveBeenCalledTimes(1);
+    expect(fixture.resizePane).toHaveBeenCalledWith({
+      paneId: "pane-3",
+      direction: "up",
+      amount: 1 / 6,
+    });
+  });
+
+  it("uses pane creation order when activity order differs from registration order", async () => {
+    const fixture = createFixture();
+    const paneIds = ["pane-2", "pane-3", "pane-4"];
+    let splitIndex = 0;
+    fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+    await registerChild(fixture, "ses_childA");
+    await registerChild(fixture, "ses_childB");
+    await registerChild(fixture, "ses_childC");
+    await fixture.orchestrator.handleEvent(activityEvent("ses_childB"));
+    await fixture.orchestrator.handleEvent(activityEvent("ses_childA"));
+    await fixture.orchestrator.handleEvent(activityEvent("ses_childC"));
+
+    expect(fixture.splitPane).toHaveBeenNthCalledWith(3, {
+      paneId: "pane-3",
+      direction: "down",
+      ratio: 0.5,
+      noFocus: true,
+    });
+    expect(fixture.resizePane).toHaveBeenCalledWith({
+      paneId: "pane-3",
+      direction: "up",
+      amount: 1 / 6,
+    });
+  });
+
+  it("retains an open pane when closing it fails", async () => {
+    const fixture = createFixture();
+    const paneIds = ["pane-2", "pane-3", "pane-4"];
+    let splitIndex = 0;
+    fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+    await attachChildById(fixture, "ses_childA");
+    await attachChildById(fixture, "ses_childB");
+    fixture.closePane.mockResolvedValue(false);
+    await fixture.orchestrator.handleEvent(deletedEvent("ses_childB"));
+    await attachChildById(fixture, "ses_childC");
+
+    expect(fixture.splitPane).toHaveBeenNthCalledWith(3, {
+      paneId: "pane-3",
+      direction: "down",
+      ratio: 0.5,
       noFocus: true,
     });
   });
@@ -340,26 +455,24 @@ describe("createPaneOrchestrator", () => {
     const fixture = createFixture();
     await registerOwnedChild(fixture);
 
-    let releaseLayout:
-      | ((layout: { paneId: string; width: number; height: number }) => void)
-      | undefined;
-    const layoutStarted = new Promise<void>((resolve) => {
-      fixture.getPaneLayout.mockImplementationOnce(
+    let releaseSplit: ((paneId: string | null) => void) | undefined;
+    const splitStarted = new Promise<void>((resolve) => {
+      fixture.splitPane.mockImplementationOnce(
         () =>
-          new Promise((resolveLayout) => {
-            releaseLayout = resolveLayout;
+          new Promise((resolveSplit) => {
+            releaseSplit = resolveSplit;
             resolve();
           }),
       );
     });
 
     const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
-    await layoutStarted;
+    await splitStarted;
 
     await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
 
     expect(fixture.registry.get(CHILD_ID)?.state).toBe("closing");
-    releaseLayout?.({ paneId: CALLER_PANE_ID, width: 200, height: 50 });
+    releaseSplit?.(NEW_PANE_ID);
     await spawning;
 
     expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
@@ -639,17 +752,18 @@ describe("createPaneOrchestrator", () => {
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
     });
 
-    it("resumes the session and cancels the close when activity arrives before the timeout", async () => {
+    it("keeps the close scheduled when a message event arrives after idle", async () => {
       const fixture = createFixture();
       await attachChild(fixture);
       await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
 
       await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
 
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
-      expect(vi.getTimerCount()).toBe(0);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("idle_pending");
+      expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(fixture.closePane).not.toHaveBeenCalled();
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
     });
 
     it("also resumes the session on an active status before the timeout", async () => {
@@ -664,6 +778,97 @@ describe("createPaneOrchestrator", () => {
       expect(fixture.closePane).not.toHaveBeenCalled();
     });
 
+    it("closes the pane after an idle session.status reaches the timeout", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "idle"));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("idle_pending");
+      expect(fixture.closePane).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(1);
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("closes a child that becomes idle while its pane is still attaching", async () => {
+      const fixture = createFixture();
+      const { releaseAttach, spawning } = await startDelayedAttachAndIdle(fixture);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("spawning");
+
+      releaseAttach(true);
+      await spawning;
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("keeps the deferred close when a final activity event follows idle during attach", async () => {
+      const fixture = createFixture();
+      const { releaseAttach, spawning } = await startDelayedAttachAndIdle(fixture);
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+
+      releaseAttach(true);
+      await spawning;
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("does not log a scheduled close when the deferred idle transition fails", async () => {
+      const fixture = createFixture();
+      const paneIds = ["pane-2", "pane-3", "pane-4"];
+      let splitIndex = 0;
+      fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+      await attachChild(fixture);
+      await attachChildById(fixture, "ses_child2");
+
+      let releaseAttach: ((attached: boolean) => void) | undefined;
+      const attachStarted = new Promise<void>((resolve) => {
+        fixture.attach.mockImplementationOnce(
+          () =>
+            new Promise<boolean>((resolveAttach) => {
+              releaseAttach = resolveAttach;
+              resolve();
+            }),
+        );
+      });
+      let releaseResize: (() => void) | undefined;
+      const resizeStarted = new Promise<void>((resolve) => {
+        fixture.resizePane.mockImplementationOnce(
+          () =>
+            new Promise<boolean>((resolveResize) => {
+              releaseResize = () => resolveResize(true);
+              resolve();
+            }),
+        );
+      });
+
+      await registerChild(fixture, "ses_child3");
+      const spawning = fixture.orchestrator.handleEvent(activityEvent("ses_child3"));
+      await attachStarted;
+
+      await fixture.orchestrator.handleEvent(idleEvent("ses_child3"));
+      releaseAttach?.(true);
+      await resizeStarted;
+
+      await fixture.orchestrator.handleEvent(idleEvent("ses_child3"));
+      expect(fixture.registry.get("ses_child3")?.state).toBe("idle_pending");
+
+      releaseResize?.();
+      await spawning;
+
+      expect(fixture.debug).not.toHaveBeenCalledWith(
+        "Child session was idle during attach: close scheduled",
+        { sessionId: "ses_child3", graceMs: 1000 },
+      );
+    });
+
     it("ignores a stale timer that fires after the session resumed", async () => {
       // The registry forgets the handle but never really cancels the timer,
       // simulating a stale fire after a resume.
@@ -671,7 +876,7 @@ describe("createPaneOrchestrator", () => {
       const fixture = createFixture({}, { registry: { clearTimeout: neverCancel } });
       await attachChild(fixture);
       await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
-      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
 
       await vi.advanceTimersByTimeAsync(1000);

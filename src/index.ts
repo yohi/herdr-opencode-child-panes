@@ -118,4 +118,7 @@ export const herdrChildPanesPlugin: Plugin = async (
   };
 };
 
-export default herdrChildPanesPlugin;
+export default {
+  id: "herdr-opencode-child-panes",
+  server: herdrChildPanesPlugin,
+};

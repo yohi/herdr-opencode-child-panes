@@ -23,6 +23,7 @@ export async function createTestPluginHooks(options: HarnessOptions = {}): Promi
       getPane: () => Promise.resolve(null),
       getPaneLayout: () => Promise.resolve(null),
       splitPane: () => Promise.resolve(null),
+      resizePane: () => Promise.resolve(false),
       runInPane: () => Promise.resolve(false),
       closePane: () => Promise.resolve(false),
     } as HerdrClient);

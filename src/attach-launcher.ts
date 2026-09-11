@@ -29,6 +29,8 @@ export interface AttachLauncher {
 
 const AUTH_ENV_KEYS = ["OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_USERNAME"] as const;
 const REDACTED = "[REDACTED]";
+const ATTACH_RETRY_DELAY_MS = 1000;
+const ATTACH_RETRY_ATTEMPTS = 10;
 
 function stripCredentials(url: URL): string {
   const safe = new URL(url.toString());
@@ -131,6 +133,11 @@ function authEnvironment(env: NodeJS.ProcessEnv = process.env): Readonly<Record<
   return environment;
 }
 
+async function waitForOpenCodePane(herdrClient: HerdrClient, paneId: string): Promise<boolean> {
+  const pane = await herdrClient.getPane(paneId);
+  return pane?.agent === "opencode" || pane?.agent_session?.agent === "opencode";
+}
+
 export function createAttachLauncher(options: CreateAttachLauncherOptions): AttachLauncher {
   const herdrClient = options.herdrClient;
   const logger = options.logger ?? noopLogger;
@@ -154,7 +161,19 @@ export function createAttachLauncher(options: CreateAttachLauncherOptions): Atta
         });
         return false;
       }
-      return true;
+      for (let attempt = 0; attempt < ATTACH_RETRY_ATTEMPTS; attempt += 1) {
+        if (await waitForOpenCodePane(herdrClient, input.paneId)) {
+          return true;
+        }
+        if (attempt < ATTACH_RETRY_ATTEMPTS - 1) {
+          await new Promise<void>((resolve) => setTimeout(resolve, ATTACH_RETRY_DELAY_MS));
+        }
+      }
+      logger.warn("OpenCode did not start in attached pane", {
+        paneId: input.paneId,
+        sessionId: input.sessionId,
+      });
+      return false;
     } catch (error) {
       const detail = error instanceof Error ? error.message : "unknown error";
       logger.error("Attach command failed unexpectedly", {

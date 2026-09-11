@@ -2,12 +2,16 @@ import type { Event } from "@opencode-ai/sdk";
 import { createAsyncQueue } from "./async-queue.js";
 import type { AttachLauncher } from "./attach-launcher.js";
 import type { ChildSession, ChildSessionRegistry } from "./child-session.js";
-import { resolvePaneLayoutDirection } from "./direction-policy.js";
 import { resolveSessionId } from "./event-resolver.js";
 import type { Logger } from "./logger.js";
 import type { ChildOwnershipResolver } from "./ownership-resolver.js";
 import { sessionCreatedPropertiesSchema, sessionStatusPropertiesSchema } from "./schemas.js";
-import type { HerdrChildPanesConfig, HerdrClient } from "./types.js";
+import type {
+  HerdrChildPanesConfig,
+  HerdrClient,
+  PaneLayoutDirection,
+  ResizePaneInput,
+} from "./types.js";
 
 const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>([
   "message.updated",
@@ -21,6 +25,52 @@ const ACTIVE_STATUS_TYPES = new Set<string>(["active", "working", "busy", "runni
  * retries are configured than there are entries.
  */
 const CLOSE_RETRY_BACKOFF_MS: readonly number[] = [500, 1000, 2000];
+const MAIN_PANE_RATIO = 2 / 3;
+const CHILD_PANE_RATIO = 0.5;
+
+interface ChildPaneSplitPlan {
+  readonly targetPaneId: string;
+  readonly direction: PaneLayoutDirection;
+  readonly ratio: number;
+  readonly resizeTargets: readonly ResizePaneInput[];
+}
+
+function createChildPaneSplitPlan(
+  childPaneIds: readonly string[],
+  callerPaneId: string,
+): ChildPaneSplitPlan {
+  if (childPaneIds.length === 0) {
+    return {
+      targetPaneId: callerPaneId,
+      direction: "right",
+      ratio: MAIN_PANE_RATIO,
+      resizeTargets: [],
+    };
+  }
+
+  const childCount = childPaneIds.length + 1;
+  const resizeTargets: ResizePaneInput[] = [];
+  for (let splitIndex = childCount - 3; splitIndex >= 0; splitIndex -= 1) {
+    const lowerPaneCount = childCount - 1 - splitIndex;
+    const amount = 1 / (lowerPaneCount * (lowerPaneCount + 1));
+    const targetPaneId = childPaneIds[splitIndex + 1];
+    if (targetPaneId !== undefined && amount > 0 && Number.isFinite(amount)) {
+      resizeTargets.push({
+        paneId: targetPaneId,
+        direction: "up",
+        amount,
+      });
+    }
+  }
+
+  const targetPaneId = childPaneIds[childPaneIds.length - 1];
+  return {
+    targetPaneId,
+    direction: "down",
+    ratio: CHILD_PANE_RATIO,
+    resizeTargets,
+  };
+}
 
 /**
  * Drives the child pane lifecycle from OpenCode events: registers owned child
@@ -68,6 +118,13 @@ function isActiveStatus(status: unknown): boolean {
   );
 }
 
+function isIdleStatus(status: unknown): boolean {
+  if (typeof status !== "object" || status === null) {
+    return false;
+  }
+  return "type" in status && status.type === "idle";
+}
+
 export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): PaneOrchestrator {
   const paneId = options.paneId;
   const serverUrl = options.serverUrl;
@@ -81,6 +138,8 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const setTimeoutFn = options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
   const queue = createAsyncQueue();
   const spawnReservations = new Set<string>();
+  const idleDuringSpawn = new Set<string>();
+  const childPaneIds: string[] = [];
   let disposed = false;
 
   function delay(ms: number): Promise<void> {
@@ -90,9 +149,17 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   }
 
   function fail(sessionId: string, reason: string): void {
+    idleDuringSpawn.delete(sessionId);
     registry.setFailureReason(sessionId, reason);
     registry.transitionTo(sessionId, "failed");
     logger.warn("Child pane lifecycle failure", { sessionId, reason });
+  }
+
+  function removeChildPaneId(childPaneId: string): void {
+    const index = childPaneIds.indexOf(childPaneId);
+    if (index >= 0) {
+      childPaneIds.splice(index, 1);
+    }
   }
 
   function reserveSpawn(sessionId: string): boolean {
@@ -113,9 +180,11 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   }
 
   async function closeSpawnedPane(sessionId: string, childPaneId: string): Promise<void> {
+    idleDuringSpawn.delete(sessionId);
     registry.setPaneId(sessionId, childPaneId);
     const closed = await herdrClient.closePane(childPaneId);
     if (closed) {
+      removeChildPaneId(childPaneId);
       registry.transitionTo(sessionId, "closed");
       logger.info("Child pane closed after session deletion", {
         sessionId,
@@ -133,12 +202,12 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
    * session is still claimed by this spawn.
    */
   async function runSpawn(sessionId: string): Promise<void> {
-    const layout = config.direction === "auto" ? await herdrClient.getPaneLayout(paneId) : null;
-    const direction = resolvePaneLayoutDirection({ direction: config.direction, layout });
+    const plan = createChildPaneSplitPlan(childPaneIds, paneId);
     const environment = attachLauncher.environment;
     const newPaneId = await herdrClient.splitPane({
-      paneId,
-      direction,
+      paneId: plan.targetPaneId,
+      direction: plan.direction,
+      ratio: plan.ratio,
       noFocus: true,
       ...(environment !== undefined && Object.keys(environment).length > 0
         ? { env: environment }
@@ -176,8 +245,30 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
 
     registry.setPaneId(sessionId, newPaneId);
+    childPaneIds.push(newPaneId);
     registry.transitionTo(sessionId, "attached");
     logger.info("Child pane attached", { sessionId, paneId: newPaneId });
+
+    for (const resize of plan.resizeTargets) {
+      if (await herdrClient.resizePane(resize)) {
+        continue;
+      }
+      logger.warn("Child pane layout resize failed", {
+        paneId: resize.paneId,
+        direction: resize.direction,
+        amount: resize.amount,
+      });
+    }
+
+    if (idleDuringSpawn.delete(sessionId)) {
+      if (registry.transitionTo(sessionId, "idle_pending")) {
+        scheduleIdleTimer(sessionId);
+        logger.debug("Child session was idle during attach: close scheduled", {
+          sessionId,
+          graceMs: config.idleGraceMs,
+        });
+      }
+    }
   }
 
   /**
@@ -236,6 +327,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
         return;
       }
       if (await herdrClient.closePane(childPaneId)) {
+        removeChildPaneId(childPaneId);
         registry.transitionTo(sessionId, "closed");
         logger.info("Child pane closed", { sessionId, paneId: childPaneId });
         return;
@@ -324,17 +416,16 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     logger.debug("Child session resumed from idle", { sessionId });
   }
 
-  /**
-   * Route a work signal (message activity or an active status) to the session:
-   * waiting sessions get spawned, idle_pending sessions resume before the
-   * grace timer fires.
-   */
   async function resumeOrSpawn(sessionId: string | undefined): Promise<void> {
     if (!sessionId) {
       return;
     }
     const session = registry.get(sessionId);
     if (!session) {
+      return;
+    }
+    if (session.state === "spawning") {
+      idleDuringSpawn.delete(sessionId);
       return;
     }
     if (session.state === "waiting_activity") {
@@ -350,7 +441,15 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!MEANINGFUL_ACTIVITY_EVENTS.has(event.type)) {
       return;
     }
-    await resumeOrSpawn(resolveSessionId(event));
+    const sessionId = resolveSessionId(event);
+    if (!sessionId) {
+      return;
+    }
+    const session = registry.get(sessionId);
+    if (!session || session.state !== "waiting_activity") {
+      return;
+    }
+    await enqueueSpawn(session);
   }
 
   async function handleSessionStatus(event: Event): Promise<void> {
@@ -362,12 +461,13 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!parsed.success) {
       return;
     }
-    // Unknown status values are ignored on purpose; only clearly active
-    // statuses prove the child started working.
-    if (!isActiveStatus(parsed.data.status)) {
+    if (isActiveStatus(parsed.data.status)) {
+      await resumeOrSpawn(sessionId);
       return;
     }
-    await resumeOrSpawn(sessionId);
+    if (isIdleStatus(parsed.data.status)) {
+      await handleSessionIdle(event);
+    }
   }
 
   /**
@@ -413,9 +513,17 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
     const session = registry.get(sessionId);
+    if (!session) {
+      return;
+    }
+    if (session.state === "spawning") {
+      idleDuringSpawn.add(sessionId);
+      logger.debug("Child session idle during attach: close deferred", { sessionId });
+      return;
+    }
     // Only attached sessions go idle. The transition doubles as the
     // idempotency gate, so duplicate idle events never arm a second timer.
-    if (!session || session.state !== "attached") {
+    if (session.state !== "attached") {
       return;
     }
     if (!registry.transitionTo(sessionId, "idle_pending")) {
@@ -437,6 +545,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!session) {
       return;
     }
+    idleDuringSpawn.delete(sessionId);
     // Cancel a pending idle-close timer, if any.
     registry.clearTimer(sessionId);
     // A rejected transition means the session is already closing/closed or
@@ -482,6 +591,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       disposed = true;
       // Cancel idle timers without force-closing attached panes, then reject
       // any newly queued pane work.
+      idleDuringSpawn.clear();
       registry.clearAllTimers();
       queue.dispose();
     },

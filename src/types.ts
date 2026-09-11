@@ -58,12 +58,21 @@ export interface PaneLayout {
   readonly height?: number;
 }
 
+export type PaneResizeDirection = "up" | "down";
+
+export interface ResizePaneInput {
+  readonly paneId: string;
+  readonly direction: PaneResizeDirection;
+  readonly amount: number;
+}
+
 /**
  * Input for splitting an existing pane.
  */
 export interface SplitPaneInput {
   readonly paneId: string;
   readonly direction?: Direction;
+  readonly ratio?: number;
   readonly command?: string;
   readonly noFocus?: boolean;
   readonly env?: Readonly<Record<string, string>>;
@@ -76,6 +85,7 @@ export interface HerdrClient {
   getPane(paneId: string): Promise<PaneInfo | null>;
   getPaneLayout(paneId: string): Promise<PaneLayout | null>;
   splitPane(input: SplitPaneInput): Promise<string | null>;
+  resizePane(input: ResizePaneInput): Promise<boolean>;
   /**
    * Execute a shell command in the target pane. The command is interpreted by
    * the target shell, so callers must not pass untrusted command strings.

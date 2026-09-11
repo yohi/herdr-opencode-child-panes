@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import herdrChildPanesPlugin, { herdrChildPanesPlugin as namedPlugin } from "../src/index.js";
+import pluginModule, { herdrChildPanesPlugin } from "../src/index.js";
 import type { HerdrClient } from "../src/types.js";
 import { createTestPluginHooks } from "../test-support/plugin-harness.js";
 
@@ -18,11 +18,12 @@ async function emit(harness: TestPluginHarness, type: string, properties: unknow
 function createRootPaneClient(): HerdrClient {
   return {
     getPane: vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
-      id: "pane-1",
-      agent_session: { agent: "opencode", session_id: "ses_root123" },
+      pane_id: "pane-1",
+      agent_session: { agent: "opencode", value: "ses_root123" },
     }),
     getPaneLayout: vi.fn<HerdrClient["getPaneLayout"]>().mockResolvedValue(null),
     splitPane: vi.fn<HerdrClient["splitPane"]>().mockResolvedValue(null),
+    resizePane: vi.fn<HerdrClient["resizePane"]>().mockResolvedValue(false),
     runInPane: vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(false),
     closePane: vi.fn<HerdrClient["closePane"]>().mockResolvedValue(false),
   };
@@ -51,8 +52,11 @@ describe("herdrChildPanesPlugin", () => {
     }
   });
 
-  it("exports the plugin as the default and as a named export", () => {
-    expect(namedPlugin).toBe(herdrChildPanesPlugin);
+  it("exports the server module as the default and the plugin function as a named export", () => {
+    expect(pluginModule).toEqual({
+      id: "herdr-opencode-child-panes",
+      server: herdrChildPanesPlugin,
+    });
   });
 
   it("returns empty hooks when runtime prerequisites are not satisfied", async () => {
@@ -143,6 +147,7 @@ describe("herdrChildPanesPlugin", () => {
     expect(client.splitPane).toHaveBeenCalledWith({
       paneId: "pane-1",
       direction: "right",
+      ratio: 2 / 3,
       noFocus: true,
     });
     expect(client.runInPane).toHaveBeenCalledTimes(1);
@@ -176,8 +181,8 @@ describe("herdrChildPanesPlugin", () => {
     process.env.HERDR_PANE_ID = "pane-1";
     process.env.HERDR_CHILD_PANES_IDLE_MS = "1";
     const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
-      id: "pane-1",
-      agent_session: { agent: "opencode", session_id: "ses_root123" },
+      pane_id: "pane-1",
+      agent_session: { agent: "opencode", value: "ses_root123" },
     });
     const getPaneLayout = vi.fn<HerdrClient["getPaneLayout"]>().mockResolvedValue({
       paneId: "pane-1",
@@ -185,9 +190,17 @@ describe("herdrChildPanesPlugin", () => {
       height: 50,
     });
     const splitPane = vi.fn<HerdrClient["splitPane"]>().mockResolvedValue("pane-2");
+    const resizePane = vi.fn<HerdrClient["resizePane"]>().mockResolvedValue(true);
     const runInPane = vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true);
     const closePane = vi.fn<HerdrClient["closePane"]>().mockResolvedValue(true);
-    const client = { getPane, getPaneLayout, splitPane, runInPane, closePane } as HerdrClient;
+    const client = {
+      getPane,
+      getPaneLayout,
+      splitPane,
+      resizePane,
+      runInPane,
+      closePane,
+    } as HerdrClient;
     const harness = await createTestPluginHooks({ herdrClient: client });
 
     try {
@@ -218,7 +231,12 @@ describe("herdrChildPanesPlugin", () => {
   it("starts spawning a registered child on active session.status", async () => {
     let resolveSplit: ((paneId: string | null) => void) | undefined;
     const client = createRootPaneClient();
-    vi.mocked(client.getPane).mockResolvedValue(null);
+    vi.mocked(client.getPane)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({
+        pane_id: "pane-2",
+        agent_session: { agent: "opencode", value: "ses_child1" },
+      });
     vi.mocked(client.splitPane).mockImplementation(
       () =>
         new Promise<string | null>((resolve) => {

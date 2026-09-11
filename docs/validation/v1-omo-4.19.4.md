@@ -92,7 +92,7 @@ export HERDR_CHILD_PANES_DEBUG="${HERDR_CHILD_PANES_DEBUG:-true}"
 - **期待される挙動:**
   - `session.created` 時点ではペインを分割しない。ペインは子が最初の実アクティビティを見せた後に現れる。
   - `herdr pane layout` に子ペインがちょうど 1 つ追加される。
-  - 子ペインの `agent_session.session_id` が OMO の子セッション ID と一致する。
+  - 子ペインの `agent_session.value` が OMO の子セッション ID と一致する。
   - メインペインがフォーカスを保持する（`--no-focus` 分割）。
 - **観測結果:** `NOT RUN`。
 - **備考:** 手動実行が必要。[シナリオを実行しなかった理由](#シナリオを実行しなかった理由)を参照。
@@ -103,7 +103,7 @@ export HERDR_CHILD_PANES_DEBUG="${HERDR_CHILD_PANES_DEBUG:-true}"
 - **アクション:** OMO で 3 件のサブエージェントタスクを同時に dispatch する。
 - **期待される挙動:**
   - 新規子ペインは最大 `HERDR_CHILD_PANES_MAX` まで。
-  - 同じ `agent_session.session_id` を共有するペインは存在しない。
+- 同じ `agent_session.value` を共有するペインは存在しない。
   - メインペインはフォーカスを保持する。
   - 3 件の OMO 子セッションはすべて正常完了する。
 - **観測結果:** `NOT RUN`。
