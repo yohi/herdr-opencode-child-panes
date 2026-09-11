@@ -23,6 +23,7 @@ function createRootPaneClient(): HerdrClient {
     }),
     getPaneLayout: vi.fn<HerdrClient["getPaneLayout"]>().mockResolvedValue(null),
     splitPane: vi.fn<HerdrClient["splitPane"]>().mockResolvedValue(null),
+    resizePane: vi.fn<HerdrClient["resizePane"]>().mockResolvedValue(false),
     runInPane: vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(false),
     closePane: vi.fn<HerdrClient["closePane"]>().mockResolvedValue(false),
   };
@@ -146,6 +147,7 @@ describe("herdrChildPanesPlugin", () => {
     expect(client.splitPane).toHaveBeenCalledWith({
       paneId: "pane-1",
       direction: "right",
+      ratio: 2 / 3,
       noFocus: true,
     });
     expect(client.runInPane).toHaveBeenCalledTimes(1);
@@ -188,9 +190,17 @@ describe("herdrChildPanesPlugin", () => {
       height: 50,
     });
     const splitPane = vi.fn<HerdrClient["splitPane"]>().mockResolvedValue("pane-2");
+    const resizePane = vi.fn<HerdrClient["resizePane"]>().mockResolvedValue(true);
     const runInPane = vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true);
     const closePane = vi.fn<HerdrClient["closePane"]>().mockResolvedValue(true);
-    const client = { getPane, getPaneLayout, splitPane, runInPane, closePane } as HerdrClient;
+    const client = {
+      getPane,
+      getPaneLayout,
+      splitPane,
+      resizePane,
+      runInPane,
+      closePane,
+    } as HerdrClient;
     const harness = await createTestPluginHooks({ herdrClient: client });
 
     try {

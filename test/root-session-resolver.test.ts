@@ -11,6 +11,7 @@ function createMockClient(): HerdrClient {
     getPane: vi.fn(),
     getPaneLayout: vi.fn(),
     splitPane: vi.fn(),
+    resizePane: vi.fn(),
     runInPane: vi.fn(),
     closePane: vi.fn(),
   };

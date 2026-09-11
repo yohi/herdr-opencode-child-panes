@@ -61,6 +61,7 @@ interface Fixture {
   readonly registry: ChildSessionRegistry;
   readonly getPaneLayout: Mock<HerdrClient["getPaneLayout"]>;
   readonly splitPane: Mock<HerdrClient["splitPane"]>;
+  readonly resizePane: Mock<HerdrClient["resizePane"]>;
   readonly closePane: Mock<HerdrClient["closePane"]>;
   readonly attach: Mock<AttachLauncher["attach"]>;
   readonly isOwnedChild: Mock<ChildOwnershipResolver["isOwnedChild"]>;
@@ -93,6 +94,7 @@ function createFixture(
       height: 50,
     }),
     splitPane: vi.fn<HerdrClient["splitPane"]>().mockResolvedValue(NEW_PANE_ID),
+    resizePane: vi.fn<HerdrClient["resizePane"]>().mockResolvedValue(true),
     runInPane: vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true),
     closePane: vi.fn<HerdrClient["closePane"]>().mockResolvedValue(true),
   };
@@ -129,6 +131,7 @@ function createFixture(
     registry,
     getPaneLayout: herdrClient.getPaneLayout as Mock<HerdrClient["getPaneLayout"]>,
     splitPane: herdrClient.splitPane as Mock<HerdrClient["splitPane"]>,
+    resizePane: herdrClient.resizePane as Mock<HerdrClient["resizePane"]>,
     closePane: herdrClient.closePane as Mock<HerdrClient["closePane"]>,
     attach: attachLauncher.attach as Mock<AttachLauncher["attach"]>,
     isOwnedChild: ownershipResolver.isOwnedChild as Mock<ChildOwnershipResolver["isOwnedChild"]>,
@@ -139,9 +142,18 @@ async function registerOwnedChild(fixture: Fixture): Promise<void> {
   await fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
 }
 
+async function registerChild(fixture: Fixture, sessionId: string): Promise<void> {
+  await fixture.orchestrator.handleEvent(createdEvent(sessionId, PARENT_ID));
+}
+
 async function attachChild(fixture: Fixture): Promise<void> {
   await registerOwnedChild(fixture);
   await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+}
+
+async function attachChildById(fixture: Fixture, sessionId: string): Promise<void> {
+  await registerChild(fixture, sessionId);
+  await fixture.orchestrator.handleEvent(activityEvent(sessionId));
 }
 
 describe("createPaneOrchestrator", () => {
@@ -165,6 +177,7 @@ describe("createPaneOrchestrator", () => {
     expect(fixture.splitPane).toHaveBeenCalledWith({
       paneId: CALLER_PANE_ID,
       direction: "right",
+      ratio: 2 / 3,
       noFocus: true,
     });
     expect(fixture.attach).toHaveBeenCalledTimes(1);
@@ -195,6 +208,7 @@ describe("createPaneOrchestrator", () => {
     expect(fixture.splitPane).toHaveBeenCalledWith({
       paneId: CALLER_PANE_ID,
       direction: "right",
+      ratio: 2 / 3,
       noFocus: true,
       env: {
         OPENCODE_SERVER_PASSWORD: "s3cret-password",
@@ -212,7 +226,7 @@ describe("createPaneOrchestrator", () => {
     expect(fixture.splitPane).toHaveBeenCalledTimes(1);
   });
 
-  it("passes the configured direction and skips the layout probe", async () => {
+  it("uses the fixed root layout regardless of configured direction", async () => {
     const fixture = createFixture({ direction: "down" });
     await registerOwnedChild(fixture);
 
@@ -221,26 +235,51 @@ describe("createPaneOrchestrator", () => {
     expect(fixture.getPaneLayout).not.toHaveBeenCalled();
     expect(fixture.splitPane).toHaveBeenCalledWith({
       paneId: CALLER_PANE_ID,
-      direction: "down",
+      direction: "right",
+      ratio: 2 / 3,
       noFocus: true,
     });
   });
 
-  it("resolves the auto direction from the caller pane layout", async () => {
+  it("splits the second child below the first child", async () => {
     const fixture = createFixture();
-    fixture.getPaneLayout.mockResolvedValue({
-      paneId: CALLER_PANE_ID,
-      width: 40,
-      height: 120,
-    });
-    await registerOwnedChild(fixture);
+    const paneIds = ["pane-2", "pane-3"];
+    let splitIndex = 0;
+    fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
 
-    await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+    await attachChild(fixture);
+    await attachChildById(fixture, "ses_child2");
 
-    expect(fixture.splitPane).toHaveBeenCalledWith({
-      paneId: CALLER_PANE_ID,
+    expect(fixture.splitPane).toHaveBeenNthCalledWith(2, {
+      paneId: "pane-2",
       direction: "down",
+      ratio: 0.5,
       noFocus: true,
+    });
+    expect(fixture.resizePane).not.toHaveBeenCalled();
+  });
+
+  it("rebalances the right column when the third child is attached", async () => {
+    const fixture = createFixture();
+    const paneIds = ["pane-2", "pane-3", "pane-4"];
+    let splitIndex = 0;
+    fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+    await attachChild(fixture);
+    await attachChildById(fixture, "ses_child2");
+    await attachChildById(fixture, "ses_child3");
+
+    expect(fixture.splitPane).toHaveBeenNthCalledWith(3, {
+      paneId: "pane-3",
+      direction: "down",
+      ratio: 0.5,
+      noFocus: true,
+    });
+    expect(fixture.resizePane).toHaveBeenCalledTimes(1);
+    expect(fixture.resizePane).toHaveBeenCalledWith({
+      paneId: "pane-3",
+      direction: "up",
+      amount: 1 / 6,
     });
   });
 
@@ -340,26 +379,24 @@ describe("createPaneOrchestrator", () => {
     const fixture = createFixture();
     await registerOwnedChild(fixture);
 
-    let releaseLayout:
-      | ((layout: { paneId: string; width: number; height: number }) => void)
-      | undefined;
-    const layoutStarted = new Promise<void>((resolve) => {
-      fixture.getPaneLayout.mockImplementationOnce(
+    let releaseSplit: ((paneId: string | null) => void) | undefined;
+    const splitStarted = new Promise<void>((resolve) => {
+      fixture.splitPane.mockImplementationOnce(
         () =>
-          new Promise((resolveLayout) => {
-            releaseLayout = resolveLayout;
+          new Promise((resolveSplit) => {
+            releaseSplit = resolveSplit;
             resolve();
           }),
       );
     });
 
     const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
-    await layoutStarted;
+    await splitStarted;
 
     await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
 
     expect(fixture.registry.get(CHILD_ID)?.state).toBe("closing");
-    releaseLayout?.({ paneId: CALLER_PANE_ID, width: 200, height: 50 });
+    releaseSplit?.(NEW_PANE_ID);
     await spawning;
 
     expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);

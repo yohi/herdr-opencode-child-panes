@@ -42,6 +42,7 @@ function createHarness(
     }),
     getPaneLayout: vi.fn(),
     splitPane: vi.fn(),
+    resizePane: vi.fn(),
     runInPane,
     closePane: vi.fn(),
   };
@@ -264,6 +265,7 @@ describe("createAttachLauncher", () => {
       getPane,
       getPaneLayout: vi.fn(),
       splitPane: vi.fn(),
+      resizePane: vi.fn(),
       runInPane,
       closePane: vi.fn(),
     };
@@ -291,6 +293,7 @@ describe("createAttachLauncher", () => {
       getPane,
       getPaneLayout: vi.fn(),
       splitPane: vi.fn(),
+      resizePane: vi.fn(),
       runInPane,
       closePane: vi.fn(),
     };

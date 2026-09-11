@@ -6,7 +6,7 @@ Herdr のペイン内で動作する OpenCode セッションがサブエージ�
 
 1. OpenCode の `session.created` イベントから子セッションを検出し、ルートセッションをホストするペイン配下かどうかを判定する。
 2. 最初の実アクティビティ（`message.updated` / `message.part.updated`）を待つ。
-3. 呼び出し元ペインを分割（`herdr pane split --no-focus`）してメインペインのフォーカスを維持したまま、新しいペイン内で `opencode attach` により子セッションをアタッチする。
+3. 呼び出し元ペインを右方向へ2:1（main:右カラム）で分割し、メインペインのフォーカスを維持したまま、新しいペイン内で `opencode attach` により子セッションをアタッチする。2つ目以降の子ペインは右カラム内で上下に等分する。
 4. 子セッションが猶予期間を超えてアイドルするか削除されたら、ペインを閉じる。
 
 ## アーキテクチャと境界
@@ -21,10 +21,10 @@ Herdr のペイン内で動作する OpenCode セッションがサブエージ�
 | `src/root-session-resolver.ts` | 呼び出し元 Herdr ペイン配下の OpenCode ルートセッションを解決（短期 TTL キャッシュ）。 |
 | `src/ownership-resolver.ts` | 生成されたセッションが所有する子か追跡対象の子孫かを判定。 |
 | `src/event-resolver.ts` | OpenCode イベントからセッション ID を抽出。未文書の形状も防御的に処理。 |
-| `src/direction-policy.ts` | `auto` と現在のレイアウトから具体的な分割方向 `right`/`down` を決定。 |
+| `src/direction-policy.ts` | 旧来の方向ポリシー。固定レイアウトの子ペイン生成では使用しない。 |
 | `src/shell-quote.ts` | ペイン内で実行するコマンドのシェル引用。 |
 | `src/attach-launcher.ts` | `opencode attach` の構築と実行。ログからのクレデンシャル除去。 |
-| `src/herdr-client.ts` | Herdr CLI のアダプタ（`pane get` / `layout` / `split` / `run` / `close`）。 |
+| `src/herdr-client.ts` | Herdr CLI のアダプタ（`pane get` / `layout` / `split` / `resize` / `run` / `close`）。 |
 | `src/pane-orchestrator.ts` | ライフサイクル駆動: アクティビティ起点の分割/アタッチ、アイドル掃除、リトライ、容量上限。 |
 | `src/async-queue.ts` | Herdr ミューテーションを直列化し、並行イベントの交差を防ぐ。 |
 
@@ -69,13 +69,14 @@ OpenCode は次回のサーバー起動時にプラグインを自動読み込�
 | `HERDR_CHILD_PANES` | `true` | マスタースイッチ。`false`（または `0` / `no`）で無効化。 |
 | `HERDR_CHILD_PANES_MAX` | `4` | 同時に管理する子ペインの最大数。 |
 | `HERDR_CHILD_PANES_IDLE_MS` | `10000` | アイドルした子ペインを閉じるまでの猶予期間（ミリ秒）。 |
-| `HERDR_CHILD_PANES_DIRECTION` | `auto` | 新規ペインの分割方向: `auto` / `right` / `down`。`auto` は横長レイアウトで `right`、それ以外で `down`。 |
+| `HERDR_CHILD_PANES_DIRECTION` | `auto` | 互換性のためパースされる設定値。子ペインは常に固定レイアウト（main:右カラム = 2:1、右カラム内は等分割）で生成され、この値は分割方向に影響しない。 |
 | `HERDR_CHILD_PANES_DEBUG` | `false` | `true` でデバッグログを出力。 |
 
 ## ペインライフサイクルの挙動
 
 - `session.created`: 親が呼び出し元ペインのルートセッションに解決されるセッションを `waiting_activity` として登録します。この時点ではペインを作りません。
-- 最初の実アクティビティ: `--no-focus` 付きで呼び出し元ペインを分割し（メインペインはフォーカスを保持）、新しいペイン内で `opencode attach` により子セッションをアタッチします。成功すると `attached` になります。
+- 最初の実アクティビティ: `--no-focus` 付きで呼び出し元ペインを右方向へ `2/3` の比率で分割し（main:右カラム = 2:1、メインペインはフォーカスを保持）、新しい右カラムのペイン内で `opencode attach` により子セッションをアタッチします。成功すると `attached` になります。
+- 2つ目以降のchild: 右カラムの最下段ペインを下方向へ `1/2` で分割し、既存の境界を再調整して右カラム内のchild paneを等分の高さにします。`HERDR_CHILD_PANES_DIRECTION`の値はこの固定レイアウトに影響しません。
 - `session.status` の `idle` または `session.idle`: セッションは `idle_pending` に遷移し、猶予期間のクローズタイマーが設定されます。新しいアクティビティはタイマーを取り消して `attached` に戻します。同じペインがアタッチされ続け、2 つ目のペインは作られません。
 - 猶予期間の経過: ペインを閉じ、セッションは `closed` になります。
 - `session.deleted`: （直列化キューを介して）即座にペインを閉じます。

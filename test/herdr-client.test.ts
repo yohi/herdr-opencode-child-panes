@@ -291,6 +291,23 @@ describe("createHerdrClient", () => {
       );
     });
 
+    it("passes a split ratio as an argv entry", async () => {
+      mockRunnerStdout(JSON.stringify({ result: { pane: { pane_id: "pane-2" } } }));
+      const client = createHerdrClient({ runner: mockRunner });
+
+      await client.splitPane({
+        paneId: "pane-1",
+        direction: "right",
+        ratio: 2 / 3,
+      });
+
+      expect(mockRunner).toHaveBeenCalledWith(
+        "herdr",
+        ["pane", "split", "--pane", "pane-1", "--direction", "right", "--ratio", String(2 / 3)],
+        5000,
+      );
+    });
+
     it("passes environment values through the pane split API", async () => {
       mockRunnerStdout(JSON.stringify({ result: { pane: { pane_id: "pane-2" } } }));
       const client = createHerdrClient({ runner: mockRunner });
@@ -373,6 +390,35 @@ describe("createHerdrClient", () => {
 
       const args = mockRunner.mock.calls[0][1];
       expect(args).toEqual(["pane", "run", "pane-1", "echo hello; echo world"]);
+    });
+  });
+
+  describe("resizePane", () => {
+    it("passes pane, direction, and amount as argv entries", async () => {
+      mockRunnerStdout("");
+      const client = createHerdrClient({ runner: mockRunner });
+
+      const result = await client.resizePane({
+        paneId: "pane-2",
+        direction: "up",
+        amount: 1 / 6,
+      });
+
+      expect(result).toBe(true);
+      expect(mockRunner).toHaveBeenCalledWith(
+        "herdr",
+        ["pane", "resize", "--pane", "pane-2", "--direction", "up", "--amount", String(1 / 6)],
+        5000,
+      );
+    });
+
+    it("returns false when pane resize fails", async () => {
+      mockRunnerError(1);
+      const client = createHerdrClient({ runner: mockRunner });
+
+      await expect(
+        client.resizePane({ paneId: "pane-2", direction: "up", amount: 1 / 6 }),
+      ).resolves.toBe(false);
     });
   });
 

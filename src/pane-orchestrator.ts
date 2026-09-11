@@ -2,12 +2,16 @@ import type { Event } from "@opencode-ai/sdk";
 import { createAsyncQueue } from "./async-queue.js";
 import type { AttachLauncher } from "./attach-launcher.js";
 import type { ChildSession, ChildSessionRegistry } from "./child-session.js";
-import { resolvePaneLayoutDirection } from "./direction-policy.js";
 import { resolveSessionId } from "./event-resolver.js";
 import type { Logger } from "./logger.js";
 import type { ChildOwnershipResolver } from "./ownership-resolver.js";
 import { sessionCreatedPropertiesSchema, sessionStatusPropertiesSchema } from "./schemas.js";
-import type { HerdrChildPanesConfig, HerdrClient } from "./types.js";
+import type {
+  HerdrChildPanesConfig,
+  HerdrClient,
+  PaneLayoutDirection,
+  ResizePaneInput,
+} from "./types.js";
 
 const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>([
   "message.updated",
@@ -21,6 +25,64 @@ const ACTIVE_STATUS_TYPES = new Set<string>(["active", "working", "busy", "runni
  * retries are configured than there are entries.
  */
 const CLOSE_RETRY_BACKOFF_MS: readonly number[] = [500, 1000, 2000];
+const MAIN_PANE_RATIO = 2 / 3;
+const CHILD_PANE_RATIO = 0.5;
+
+interface ChildPaneSplitPlan {
+  readonly targetPaneId: string;
+  readonly direction: PaneLayoutDirection;
+  readonly ratio: number;
+  readonly resizeTargets: readonly ResizePaneInput[];
+}
+
+function createChildPaneSplitPlan(
+  sessions: readonly ChildSession[],
+  callerPaneId: string,
+): ChildPaneSplitPlan {
+  const childPaneIds = sessions.flatMap((session) => {
+    const childPaneId = session.paneId;
+    return childPaneId !== undefined && childPaneId !== callerPaneId ? [childPaneId] : [];
+  });
+  if (childPaneIds.length === 0) {
+    return {
+      targetPaneId: callerPaneId,
+      direction: "right",
+      ratio: MAIN_PANE_RATIO,
+      resizeTargets: [],
+    };
+  }
+
+  const childCount = childPaneIds.length + 1;
+  const resizeTargets: ResizePaneInput[] = [];
+  for (let splitIndex = childCount - 3; splitIndex >= 0; splitIndex -= 1) {
+    const lowerPaneCount = childCount - 1 - splitIndex;
+    const amount = 1 / (lowerPaneCount * (lowerPaneCount + 1));
+    const targetPaneId = childPaneIds[splitIndex + 1];
+    if (targetPaneId !== undefined && amount > 0 && Number.isFinite(amount)) {
+      resizeTargets.push({
+        paneId: targetPaneId,
+        direction: "up",
+        amount,
+      });
+    }
+  }
+
+  const targetPaneId = childPaneIds[childPaneIds.length - 1];
+  if (targetPaneId === undefined) {
+    return {
+      targetPaneId: callerPaneId,
+      direction: "right",
+      ratio: MAIN_PANE_RATIO,
+      resizeTargets: [],
+    };
+  }
+  return {
+    targetPaneId,
+    direction: "down",
+    ratio: CHILD_PANE_RATIO,
+    resizeTargets,
+  };
+}
 
 /**
  * Drives the child pane lifecycle from OpenCode events: registers owned child
@@ -140,12 +202,12 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
    * session is still claimed by this spawn.
    */
   async function runSpawn(sessionId: string): Promise<void> {
-    const layout = config.direction === "auto" ? await herdrClient.getPaneLayout(paneId) : null;
-    const direction = resolvePaneLayoutDirection({ direction: config.direction, layout });
+    const plan = createChildPaneSplitPlan(registry.listActive(), paneId);
     const environment = attachLauncher.environment;
     const newPaneId = await herdrClient.splitPane({
-      paneId,
-      direction,
+      paneId: plan.targetPaneId,
+      direction: plan.direction,
+      ratio: plan.ratio,
       noFocus: true,
       ...(environment !== undefined && Object.keys(environment).length > 0
         ? { env: environment }
@@ -185,6 +247,17 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     registry.setPaneId(sessionId, newPaneId);
     registry.transitionTo(sessionId, "attached");
     logger.info("Child pane attached", { sessionId, paneId: newPaneId });
+
+    for (const resize of plan.resizeTargets) {
+      if (await herdrClient.resizePane(resize)) {
+        continue;
+      }
+      logger.warn("Child pane layout resize failed", {
+        paneId: resize.paneId,
+        direction: resize.direction,
+        amount: resize.amount,
+      });
+    }
   }
 
   /**
