@@ -313,6 +313,52 @@ describe("createPaneOrchestrator", () => {
     });
   });
 
+  it("uses pane creation order when activity order differs from registration order", async () => {
+    const fixture = createFixture();
+    const paneIds = ["pane-2", "pane-3", "pane-4"];
+    let splitIndex = 0;
+    fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+    await registerChild(fixture, "ses_childA");
+    await registerChild(fixture, "ses_childB");
+    await registerChild(fixture, "ses_childC");
+    await fixture.orchestrator.handleEvent(activityEvent("ses_childB"));
+    await fixture.orchestrator.handleEvent(activityEvent("ses_childA"));
+    await fixture.orchestrator.handleEvent(activityEvent("ses_childC"));
+
+    expect(fixture.splitPane).toHaveBeenNthCalledWith(3, {
+      paneId: "pane-3",
+      direction: "down",
+      ratio: 0.5,
+      noFocus: true,
+    });
+    expect(fixture.resizePane).toHaveBeenCalledWith({
+      paneId: "pane-3",
+      direction: "up",
+      amount: 1 / 6,
+    });
+  });
+
+  it("retains an open pane when closing it fails", async () => {
+    const fixture = createFixture();
+    const paneIds = ["pane-2", "pane-3", "pane-4"];
+    let splitIndex = 0;
+    fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+    await attachChildById(fixture, "ses_childA");
+    await attachChildById(fixture, "ses_childB");
+    fixture.closePane.mockResolvedValue(false);
+    await fixture.orchestrator.handleEvent(deletedEvent("ses_childB"));
+    await attachChildById(fixture, "ses_childC");
+
+    expect(fixture.splitPane).toHaveBeenNthCalledWith(3, {
+      paneId: "pane-3",
+      direction: "down",
+      ratio: 0.5,
+      noFocus: true,
+    });
+  });
+
   it("marks the session failed and never retries after a failed split", async () => {
     const fixture = createFixture();
     fixture.splitPane.mockResolvedValue(null);

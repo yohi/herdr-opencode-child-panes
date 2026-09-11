@@ -36,13 +36,9 @@ interface ChildPaneSplitPlan {
 }
 
 function createChildPaneSplitPlan(
-  sessions: readonly ChildSession[],
+  childPaneIds: readonly string[],
   callerPaneId: string,
 ): ChildPaneSplitPlan {
-  const childPaneIds = sessions.flatMap((session) => {
-    const childPaneId = session.paneId;
-    return childPaneId !== undefined && childPaneId !== callerPaneId ? [childPaneId] : [];
-  });
   if (childPaneIds.length === 0) {
     return {
       targetPaneId: callerPaneId,
@@ -143,6 +139,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const queue = createAsyncQueue();
   const spawnReservations = new Set<string>();
   const idleDuringSpawn = new Set<string>();
+  const childPaneIds: string[] = [];
   let disposed = false;
 
   function delay(ms: number): Promise<void> {
@@ -156,6 +153,13 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     registry.setFailureReason(sessionId, reason);
     registry.transitionTo(sessionId, "failed");
     logger.warn("Child pane lifecycle failure", { sessionId, reason });
+  }
+
+  function removeChildPaneId(childPaneId: string): void {
+    const index = childPaneIds.indexOf(childPaneId);
+    if (index >= 0) {
+      childPaneIds.splice(index, 1);
+    }
   }
 
   function reserveSpawn(sessionId: string): boolean {
@@ -180,6 +184,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     registry.setPaneId(sessionId, childPaneId);
     const closed = await herdrClient.closePane(childPaneId);
     if (closed) {
+      removeChildPaneId(childPaneId);
       registry.transitionTo(sessionId, "closed");
       logger.info("Child pane closed after session deletion", {
         sessionId,
@@ -197,7 +202,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
    * session is still claimed by this spawn.
    */
   async function runSpawn(sessionId: string): Promise<void> {
-    const plan = createChildPaneSplitPlan(registry.listActive(), paneId);
+    const plan = createChildPaneSplitPlan(childPaneIds, paneId);
     const environment = attachLauncher.environment;
     const newPaneId = await herdrClient.splitPane({
       paneId: plan.targetPaneId,
@@ -240,6 +245,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
 
     registry.setPaneId(sessionId, newPaneId);
+    childPaneIds.push(newPaneId);
     registry.transitionTo(sessionId, "attached");
     logger.info("Child pane attached", { sessionId, paneId: newPaneId });
 
@@ -321,6 +327,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
         return;
       }
       if (await herdrClient.closePane(childPaneId)) {
+        removeChildPaneId(childPaneId);
         registry.transitionTo(sessionId, "closed");
         logger.info("Child pane closed", { sessionId, paneId: childPaneId });
         return;
