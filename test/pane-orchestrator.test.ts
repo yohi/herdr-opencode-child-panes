@@ -156,6 +156,33 @@ async function attachChildById(fixture: Fixture, sessionId: string): Promise<voi
   await fixture.orchestrator.handleEvent(activityEvent(sessionId));
 }
 
+async function startDelayedAttachAndIdle(fixture: Fixture): Promise<{
+  readonly releaseAttach: (attached: boolean) => void;
+  readonly spawning: Promise<void>;
+}> {
+  let resolveAttach: ((attached: boolean) => void) | undefined;
+  const attachStarted = new Promise<void>((resolve) => {
+    fixture.attach.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolveAttachPromise) => {
+          resolveAttach = resolveAttachPromise;
+          resolve();
+        }),
+    );
+  });
+
+  await registerOwnedChild(fixture);
+  const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+  await attachStarted;
+
+  await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "idle"));
+
+  return {
+    releaseAttach: (attached) => resolveAttach?.(attached),
+    spawning,
+  };
+}
+
 describe("createPaneOrchestrator", () => {
   it("keeps a created-only session waiting without splitting", async () => {
     const fixture = createFixture();
@@ -719,25 +746,10 @@ describe("createPaneOrchestrator", () => {
 
     it("closes a child that becomes idle while its pane is still attaching", async () => {
       const fixture = createFixture();
-      let releaseAttach: ((attached: boolean) => void) | undefined;
-      const attachStarted = new Promise<void>((resolve) => {
-        fixture.attach.mockImplementationOnce(
-          () =>
-            new Promise<boolean>((resolveAttach) => {
-              releaseAttach = resolveAttach;
-              resolve();
-            }),
-        );
-      });
-
-      await registerOwnedChild(fixture);
-      const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
-      await attachStarted;
-
-      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "idle"));
+      const { releaseAttach, spawning } = await startDelayedAttachAndIdle(fixture);
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("spawning");
 
-      releaseAttach?.(true);
+      releaseAttach(true);
       await spawning;
       await vi.advanceTimersByTimeAsync(1000);
 
@@ -747,25 +759,10 @@ describe("createPaneOrchestrator", () => {
 
     it("keeps the deferred close when a final activity event follows idle during attach", async () => {
       const fixture = createFixture();
-      let releaseAttach: ((attached: boolean) => void) | undefined;
-      const attachStarted = new Promise<void>((resolve) => {
-        fixture.attach.mockImplementationOnce(
-          () =>
-            new Promise<boolean>((resolveAttach) => {
-              releaseAttach = resolveAttach;
-              resolve();
-            }),
-        );
-      });
-
-      await registerOwnedChild(fixture);
-      const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
-      await attachStarted;
-
-      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "idle"));
+      const { releaseAttach, spawning } = await startDelayedAttachAndIdle(fixture);
       await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
 
-      releaseAttach?.(true);
+      releaseAttach(true);
       await spawning;
       await vi.advanceTimersByTimeAsync(1000);
 
