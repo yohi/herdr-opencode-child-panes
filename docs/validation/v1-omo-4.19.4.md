@@ -19,19 +19,19 @@ PR4 ブランチはテスト・CI・ドキュメントの追加のみで、ラ�
 
 ## 設定
 
-検証ランで使用（推奨）する環境。プラグイン自体にクレデンシャルは不要。OpenCode サーバーをパスワード保護する場合、`OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD` は環境からアタッチプロセスへ継承されるが、ポリシーによりここでは秘匿する。
+検証ランで使用（推奨）する環境。以下は OpenCode 起動前に実行する。プラグイン自体にクレデンシャルは不要。OpenCode サーバーをパスワード保護する場合、`OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD` は環境からアタッチプロセスへ継承されるが、ポリシーによりここでは秘匿する。
 
 ```sh
 # Herdr がペイン内に自動設定する値（確認のみ行い、ハードコードしない）:
 #   HERDR_ENV=1
 #   HERDR_PANE_ID=<呼び出し元ペインID>
 
-# プラグインのスイッチ:
-HERDR_CHILD_PANES=true
-HERDR_CHILD_PANES_MAX=4
-HERDR_CHILD_PANES_IDLE_MS=10000
-HERDR_CHILD_PANES_DIRECTION=auto
-HERDR_CHILD_PANES_DEBUG=true
+# プラグインのスイッチ（既存値を優先して OpenCode へ継承する）:
+export HERDR_CHILD_PANES="${HERDR_CHILD_PANES:-true}"
+export HERDR_CHILD_PANES_MAX="${HERDR_CHILD_PANES_MAX:-4}"
+export HERDR_CHILD_PANES_IDLE_MS="${HERDR_CHILD_PANES_IDLE_MS:-10000}"
+export HERDR_CHILD_PANES_DIRECTION="${HERDR_CHILD_PANES_DIRECTION:-auto}"
+export HERDR_CHILD_PANES_DEBUG="${HERDR_CHILD_PANES_DEBUG:-true}"
 ```
 
 ## 共通セットアップ
@@ -64,7 +64,11 @@ HERDR_CHILD_PANES_DEBUG=true
    ```sh
    test "${HERDR_ENV:-}" = 1 && echo "HERDR_ENV ok"
    test -n "${HERDR_PANE_ID:-}" && echo "HERDR_PANE_ID=$HERDR_PANE_ID"
-   export HERDR_CHILD_PANES=true HERDR_CHILD_PANES_DEBUG=true
+   export HERDR_CHILD_PANES="${HERDR_CHILD_PANES:-true}"
+   export HERDR_CHILD_PANES_MAX="${HERDR_CHILD_PANES_MAX:-4}"
+   export HERDR_CHILD_PANES_IDLE_MS="${HERDR_CHILD_PANES_IDLE_MS:-10000}"
+   export HERDR_CHILD_PANES_DIRECTION="${HERDR_CHILD_PANES_DIRECTION:-auto}"
+   export HERDR_CHILD_PANES_DEBUG="${HERDR_CHILD_PANES_DEBUG:-true}"
    ```
 
 5. その OpenCode セッションで OMO v4.19.4 を起動する（ペインと同じ OpenCode サーバーに接続する）。
@@ -83,7 +87,7 @@ HERDR_CHILD_PANES_DEBUG=true
 
 ### シナリオ 1 — 単一バックグラウンド子
 
-- **セットアップ:** 共通セットアップ。`HERDR_CHILD_PANES_MAX=4`。
+- **セットアップ:** 共通セットアップ。`export HERDR_CHILD_PANES_MAX=4` を OpenCode 起動前に実行する。
 - **アクション:** メインの OpenCode セッションで、バックグラウンドのサブエージェントタスクを 1 件 dispatch する（例: `/subagent explore`）。
 - **期待される挙動:**
   - `session.created` 時点ではペインを分割しない。ペインは子が最初の実アクティビティを見せた後に現れる。
@@ -107,7 +111,7 @@ HERDR_CHILD_PANES_DEBUG=true
 
 ### シナリオ 3 — 完了時のアイドル掃除
 
-- **セットアップ:** 共通セットアップ。猶予期間を観測可能にするため `HERDR_CHILD_PANES_IDLE_MS=10000`。
+- **セットアップ:** 共通セットアップ。猶予期間を観測可能にするため、`export HERDR_CHILD_PANES_IDLE_MS=10000` を OpenCode 起動前に実行する。
 - **アクション:** サブエージェントタスクを完了まで実行して待つ。
 - **期待される挙動:**
   - セッションがアクティブな間、子ペインは開いたまま。
@@ -118,7 +122,7 @@ HERDR_CHILD_PANES_DEBUG=true
 
 ### シナリオ 4 — アイドル復帰
 
-- **セットアップ:** 共通セットアップ。余裕を持たせて `HERDR_CHILD_PANES_IDLE_MS=15000`。
+- **セットアップ:** 共通セットアップ。余裕を持たせて、`export HERDR_CHILD_PANES_IDLE_MS=15000` を OpenCode 起動前に実行する。
 - **アクション:** 長時間のサブエージェントタスクを開始し、アイドルになったら、猶予期間が満了する前に子へ新しいメッセージを送る。
 - **期待される挙動:**
   - `session.idle` がクローズ保留タイマーを設定する（状態 `idle_pending`）。
@@ -140,7 +144,7 @@ HERDR_CHILD_PANES_DEBUG=true
 
 ### シナリオ 6 — 容量超過
 
-- **セットアップ:** 共通セットアップ + `HERDR_CHILD_PANES_MAX=2`。
+- **セットアップ:** 共通セットアップ + `export HERDR_CHILD_PANES_MAX=2`（OpenCode 起動前に実行）。
 - **アクション:** 4 件のサブエージェントタスクを dispatch する。
 - **期待される挙動:**
   - 作られる子ペインは 2 つだけ。
