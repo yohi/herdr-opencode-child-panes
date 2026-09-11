@@ -34,7 +34,7 @@ Herdr のペイン内で動作する OpenCode セッションがサブエージ�
 
 - Node.js 20 以降
 - `herdr` が `PATH` 上にある Herdr 環境
-- `session.created` / `session.idle` / `session.deleted` / `message.updated` / `message.part.updated` を報告する OpenCode（OpenCode 1.18.x で動作確認）
+- `session.created` / `session.status`（`idle` を含む）/ `session.idle` / `session.deleted` / `message.updated` / `message.part.updated` を報告する OpenCode（OpenCode 1.18.x で動作確認）
 - プラグインは OpenCode ルートセッションをホストする Herdr ペイン内で実行されること
 
 ## インストール
@@ -76,7 +76,7 @@ OpenCode は次回のサーバー起動時にプラグインを自動読み込�
 
 - `session.created`: 親が呼び出し元ペインのルートセッションに解決されるセッションを `waiting_activity` として登録します。この時点ではペインを作りません。
 - 最初の実アクティビティ: `--no-focus` 付きで呼び出し元ペインを分割し（メインペインはフォーカスを保持）、新しいペイン内で `opencode attach` により子セッションをアタッチします。成功すると `attached` になります。
-- `session.idle`: セッションは `idle_pending` に遷移し、猶予期間のクローズタイマーが設定されます。新しいアクティビティはタイマーを取り消して `attached` に戻します。同じペインがアタッチされ続け、2 つ目のペインは作られません。
+- `session.status` の `idle` または `session.idle`: セッションは `idle_pending` に遷移し、猶予期間のクローズタイマーが設定されます。新しいアクティビティはタイマーを取り消して `attached` に戻します。同じペインがアタッチされ続け、2 つ目のペインは作られません。
 - 猶予期間の経過: ペインを閉じ、セッションは `closed` になります。
 - `session.deleted`: （直列化キューを介して）即座にペインを閉じます。
 - クローズ失敗はバックオフ付きで有界リトライされ、リトライを使い切ると `close_failed` を理由に `failed` になります。

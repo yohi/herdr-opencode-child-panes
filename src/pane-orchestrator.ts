@@ -68,6 +68,13 @@ function isActiveStatus(status: unknown): boolean {
   );
 }
 
+function isIdleStatus(status: unknown): boolean {
+  if (typeof status !== "object" || status === null) {
+    return false;
+  }
+  return "type" in status && status.type === "idle";
+}
+
 export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): PaneOrchestrator {
   const paneId = options.paneId;
   const serverUrl = options.serverUrl;
@@ -324,11 +331,6 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     logger.debug("Child session resumed from idle", { sessionId });
   }
 
-  /**
-   * Route a work signal (message activity or an active status) to the session:
-   * waiting sessions get spawned, idle_pending sessions resume before the
-   * grace timer fires.
-   */
   async function resumeOrSpawn(sessionId: string | undefined): Promise<void> {
     if (!sessionId) {
       return;
@@ -362,12 +364,13 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!parsed.success) {
       return;
     }
-    // Unknown status values are ignored on purpose; only clearly active
-    // statuses prove the child started working.
-    if (!isActiveStatus(parsed.data.status)) {
+    if (isActiveStatus(parsed.data.status)) {
+      await resumeOrSpawn(sessionId);
       return;
     }
-    await resumeOrSpawn(sessionId);
+    if (isIdleStatus(parsed.data.status)) {
+      await handleSessionIdle(event);
+    }
   }
 
   /**

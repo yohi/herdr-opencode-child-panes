@@ -664,6 +664,21 @@ describe("createPaneOrchestrator", () => {
       expect(fixture.closePane).not.toHaveBeenCalled();
     });
 
+    it("closes the pane after an idle session.status reaches the timeout", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "idle"));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("idle_pending");
+      expect(fixture.closePane).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(1);
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
     it("ignores a stale timer that fires after the session resumed", async () => {
       // The registry forgets the handle but never really cancels the timer,
       // simulating a stale fire after a resume.
