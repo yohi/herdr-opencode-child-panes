@@ -153,15 +153,15 @@ export function createAttachLauncher(options: CreateAttachLauncherOptions): Atta
     });
 
     try {
+      const attached = await herdrClient.runInPane(input.paneId, command);
+      if (!attached) {
+        logger.warn("Failed to run attach command in pane", {
+          paneId: input.paneId,
+          sessionId: input.sessionId,
+        });
+        return false;
+      }
       for (let attempt = 0; attempt < ATTACH_RETRY_ATTEMPTS; attempt += 1) {
-        const attached = await herdrClient.runInPane(input.paneId, command);
-        if (!attached) {
-          logger.warn("Failed to run attach command in pane", {
-            paneId: input.paneId,
-            sessionId: input.sessionId,
-          });
-          return false;
-        }
         if (await waitForOpenCodePane(herdrClient, input.paneId)) {
           return true;
         }

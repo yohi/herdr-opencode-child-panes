@@ -68,14 +68,6 @@ function createChildPaneSplitPlan(
   }
 
   const targetPaneId = childPaneIds[childPaneIds.length - 1];
-  if (targetPaneId === undefined) {
-    return {
-      targetPaneId: callerPaneId,
-      direction: "right",
-      ratio: MAIN_PANE_RATIO,
-      resizeTargets: [],
-    };
-  }
   return {
     targetPaneId,
     direction: "down",
@@ -265,11 +257,11 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (idleDuringSpawn.delete(sessionId)) {
       if (registry.transitionTo(sessionId, "idle_pending")) {
         scheduleIdleTimer(sessionId);
+        logger.debug("Child session was idle during attach: close scheduled", {
+          sessionId,
+          graceMs: config.idleGraceMs,
+        });
       }
-      logger.debug("Child session was idle during attach: close scheduled", {
-        sessionId,
-        graceMs: config.idleGraceMs,
-      });
     }
   }
 

@@ -252,7 +252,7 @@ describe("createAttachLauncher", () => {
     );
   });
 
-  it("retries after a newly split pane has not started OpenCode yet", async () => {
+  it("polls for OpenCode without resending the attach command", async () => {
     const runInPane = vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true);
     const getPane = vi
       .fn<HerdrClient["getPane"]>()
@@ -280,7 +280,7 @@ describe("createAttachLauncher", () => {
 
     expect(attached).toBe(true);
     expect(getPane).toHaveBeenCalledTimes(2);
-    expect(runInPane).toHaveBeenCalledTimes(2);
+    expect(runInPane).toHaveBeenCalledTimes(1);
   });
 
   it("accepts a pane identified by its top-level agent", async () => {

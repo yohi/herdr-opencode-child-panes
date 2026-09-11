@@ -7,6 +7,7 @@ import type {
   ChildSessionRegistry,
   CreateChildSessionRegistryOptions,
 } from "../src/child-session.js";
+import type { Logger } from "../src/logger.js";
 import type { ChildOwnershipResolver } from "../src/ownership-resolver.js";
 import {
   type CreatePaneOrchestratorOptions,
@@ -65,6 +66,7 @@ interface Fixture {
   readonly closePane: Mock<HerdrClient["closePane"]>;
   readonly attach: Mock<AttachLauncher["attach"]>;
   readonly isOwnedChild: Mock<ChildOwnershipResolver["isOwnedChild"]>;
+  readonly debug: Mock<Logger["debug"]>;
 }
 
 interface FixtureOptions {
@@ -135,6 +137,7 @@ function createFixture(
     closePane: herdrClient.closePane as Mock<HerdrClient["closePane"]>,
     attach: attachLauncher.attach as Mock<AttachLauncher["attach"]>,
     isOwnedChild: ownershipResolver.isOwnedChild as Mock<ChildOwnershipResolver["isOwnedChild"]>,
+    debug: logger.debug as Mock<Logger["debug"]>,
   };
 }
 
@@ -768,6 +771,56 @@ describe("createPaneOrchestrator", () => {
 
       expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("does not log a scheduled close when the deferred idle transition fails", async () => {
+      const fixture = createFixture();
+      const paneIds = ["pane-2", "pane-3", "pane-4"];
+      let splitIndex = 0;
+      fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+      await attachChild(fixture);
+      await attachChildById(fixture, "ses_child2");
+
+      let releaseAttach: ((attached: boolean) => void) | undefined;
+      const attachStarted = new Promise<void>((resolve) => {
+        fixture.attach.mockImplementationOnce(
+          () =>
+            new Promise<boolean>((resolveAttach) => {
+              releaseAttach = resolveAttach;
+              resolve();
+            }),
+        );
+      });
+      let releaseResize: (() => void) | undefined;
+      const resizeStarted = new Promise<void>((resolve) => {
+        fixture.resizePane.mockImplementationOnce(
+          () =>
+            new Promise<boolean>((resolveResize) => {
+              releaseResize = () => resolveResize(true);
+              resolve();
+            }),
+        );
+      });
+
+      await registerChild(fixture, "ses_child3");
+      const spawning = fixture.orchestrator.handleEvent(activityEvent("ses_child3"));
+      await attachStarted;
+
+      await fixture.orchestrator.handleEvent(idleEvent("ses_child3"));
+      releaseAttach?.(true);
+      await resizeStarted;
+
+      await fixture.orchestrator.handleEvent(idleEvent("ses_child3"));
+      expect(fixture.registry.get("ses_child3")?.state).toBe("idle_pending");
+
+      releaseResize?.();
+      await spawning;
+
+      expect(fixture.debug).not.toHaveBeenCalledWith(
+        "Child session was idle during attach: close scheduled",
+        { sessionId: "ses_child3", graceMs: 1000 },
+      );
     });
 
     it("ignores a stale timer that fires after the session resumed", async () => {
