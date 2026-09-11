@@ -29,13 +29,48 @@ describe("createHerdrClient", () => {
 
   describe("getPane", () => {
     it("returns parsed pane info when herdr exits cleanly", async () => {
-      mockRunnerStdout(JSON.stringify({ id: "pane-1" }));
+      mockRunnerStdout(
+        JSON.stringify({
+          id: "cli:pane:get",
+          result: {
+            pane: {
+              pane_id: "pane-1",
+              agent_session: { agent: "opencode", value: "ses_root123" },
+            },
+          },
+          type: "pane_info",
+        }),
+      );
       const client = createHerdrClient({ runner: mockRunner });
 
       const result = await client.getPane("pane-1");
 
-      expect(result).toEqual({ id: "pane-1" });
+      expect(result).toEqual({
+        pane_id: "pane-1",
+        agent_session: { agent: "opencode", value: "ses_root123" },
+      });
       expect(mockRunner).toHaveBeenCalledWith("herdr", ["pane", "get", "pane-1"], 5000);
+    });
+
+    it("preserves the top-level agent when no session metadata is reported", async () => {
+      mockRunnerStdout(
+        JSON.stringify({
+          result: {
+            pane: {
+              pane_id: "pane-2",
+              agent: "opencode",
+            },
+          },
+        }),
+      );
+      const client = createHerdrClient({ runner: mockRunner });
+
+      const result = await client.getPane("pane-2");
+
+      expect(result).toEqual({
+        pane_id: "pane-2",
+        agent: "opencode",
+      });
     });
 
     it("returns null when herdr exits with a non-zero code", async () => {
@@ -214,7 +249,13 @@ describe("createHerdrClient", () => {
 
   describe("splitPane", () => {
     it("returns the new pane id parsed from the response", async () => {
-      mockRunnerStdout(JSON.stringify({ id: "pane-2" }));
+      mockRunnerStdout(
+        JSON.stringify({
+          id: "cli:pane:split",
+          result: { pane: { pane_id: "pane-2" } },
+          type: "pane_split",
+        }),
+      );
       const client = createHerdrClient({ runner: mockRunner });
 
       const result = await client.splitPane({ paneId: "pane-1" });
@@ -223,7 +264,7 @@ describe("createHerdrClient", () => {
     });
 
     it("passes direction and command as argv entries", async () => {
-      mockRunnerStdout(JSON.stringify({ id: "pane-2" }));
+      mockRunnerStdout(JSON.stringify({ result: { pane: { pane_id: "pane-2" } } }));
       const client = createHerdrClient({ runner: mockRunner });
 
       await client.splitPane({
@@ -251,7 +292,7 @@ describe("createHerdrClient", () => {
     });
 
     it("passes environment values through the pane split API", async () => {
-      mockRunnerStdout(JSON.stringify({ id: "pane-2" }));
+      mockRunnerStdout(JSON.stringify({ result: { pane: { pane_id: "pane-2" } } }));
       const client = createHerdrClient({ runner: mockRunner });
 
       await client.splitPane({

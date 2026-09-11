@@ -36,7 +36,10 @@ function createHarness(
     runInPane.mockResolvedValue(runInPaneResult);
   }
   const client: HerdrClient = {
-    getPane: vi.fn(),
+    getPane: vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
+      pane_id: "pane-2",
+      agent_session: { agent: "opencode", value: "ses_child1" },
+    }),
     getPaneLayout: vi.fn(),
     splitPane: vi.fn(),
     runInPane,
@@ -246,6 +249,62 @@ describe("createAttachLauncher", () => {
           "opencode attach 'https://example.test:8443/' --session 'ses_child1' --dir 'workspace/repo'",
       }),
     );
+  });
+
+  it("retries after a newly split pane has not started OpenCode yet", async () => {
+    const runInPane = vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true);
+    const getPane = vi
+      .fn<HerdrClient["getPane"]>()
+      .mockResolvedValueOnce({ pane_id: "pane-2" })
+      .mockResolvedValue({
+        pane_id: "pane-2",
+        agent_session: { agent: "opencode", value: "ses_child1" },
+      });
+    const client: HerdrClient = {
+      getPane,
+      getPaneLayout: vi.fn(),
+      splitPane: vi.fn(),
+      runInPane,
+      closePane: vi.fn(),
+    };
+    const launcher = createAttachLauncher({ herdrClient: client });
+
+    const attached = await launcher.attach({
+      paneId: "pane-2",
+      sessionId: "ses_child1",
+      serverUrl: new URL("https://example.test:8443"),
+      directory: "workspace/repo",
+    });
+
+    expect(attached).toBe(true);
+    expect(getPane).toHaveBeenCalledTimes(2);
+    expect(runInPane).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts a pane identified by its top-level agent", async () => {
+    const runInPane = vi.fn<HerdrClient["runInPane"]>().mockResolvedValue(true);
+    const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
+      pane_id: "pane-2",
+      agent: "opencode",
+    } as never);
+    const client: HerdrClient = {
+      getPane,
+      getPaneLayout: vi.fn(),
+      splitPane: vi.fn(),
+      runInPane,
+      closePane: vi.fn(),
+    };
+    const launcher = createAttachLauncher({ herdrClient: client });
+
+    const attached = await launcher.attach({
+      paneId: "pane-2",
+      sessionId: "ses_child1",
+      serverUrl: new URL("https://example.test:8443"),
+      directory: "workspace/repo",
+    });
+
+    expect(attached).toBe(true);
+    expect(getPane).toHaveBeenCalledTimes(1);
   });
 
   it("returns false when the pane run reports failure", async () => {

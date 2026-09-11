@@ -18,10 +18,10 @@ function createMockClient(): HerdrClient {
 
 function opencodePaneInfo(sessionId: string): PaneInfo {
   return {
-    id: PANE_ID,
+    pane_id: PANE_ID,
     agent_session: {
       agent: OPCODE_AGENT,
-      session_id: sessionId,
+      value: sessionId,
     },
   };
 }
@@ -43,9 +43,25 @@ describe("createRootSessionResolver", () => {
     expect(client.getPane).toHaveBeenCalledWith(PANE_ID);
   });
 
+  it("resolves the root session id from Herdr's live agent_session value field", async () => {
+    const client = createMockClient();
+    vi.mocked(client.getPane).mockResolvedValue({
+      pane_id: PANE_ID,
+      agent_session: {
+        agent: OPCODE_AGENT,
+        value: ROOT_SESSION_ID,
+      },
+    });
+    const resolver = createRootSessionResolver({ paneId: PANE_ID, herdrClient: client });
+
+    const result = await resolver.resolve();
+
+    expect(result).toEqual({ rootSessionId: ROOT_SESSION_ID });
+  });
+
   it("returns no root session when pane metadata is missing agent_session", async () => {
     const client = createMockClient();
-    vi.mocked(client.getPane).mockResolvedValue({ id: PANE_ID });
+    vi.mocked(client.getPane).mockResolvedValue({ pane_id: PANE_ID });
     const resolver = createRootSessionResolver({ paneId: PANE_ID, herdrClient: client });
 
     const result = await resolver.resolve();
@@ -56,10 +72,10 @@ describe("createRootSessionResolver", () => {
   it("returns no root session when agent_session names a different agent", async () => {
     const client = createMockClient();
     vi.mocked(client.getPane).mockResolvedValue({
-      id: PANE_ID,
+      pane_id: PANE_ID,
       agent_session: {
         agent: "claude",
-        session_id: ROOT_SESSION_ID,
+        value: ROOT_SESSION_ID,
       },
     });
     const resolver = createRootSessionResolver({ paneId: PANE_ID, herdrClient: client });
@@ -103,10 +119,10 @@ describe("createRootSessionResolver", () => {
     vi.mocked(client.getPane)
       .mockResolvedValueOnce(opencodePaneInfo(ROOT_SESSION_ID))
       .mockResolvedValueOnce({
-        id: PANE_ID,
+        pane_id: PANE_ID,
         agent_session: {
           agent: OPCODE_AGENT,
-          session_id: "ses_updated",
+          value: "ses_updated",
         },
       });
     let nowMs = 0;

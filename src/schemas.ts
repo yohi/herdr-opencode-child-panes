@@ -5,12 +5,19 @@ export const paneLayoutDirectionSchema = z.enum(["right", "down"]);
 
 export const agentSessionSchema = z.object({
   agent: z.string().min(1),
-  session_id: z.string().min(1),
+  value: z.string().min(1),
 });
 
 export const paneInfoSchema = z.object({
-  id: z.string().min(1),
+  pane_id: z.string().min(1),
+  agent: z.string().min(1).optional(),
   agent_session: agentSessionSchema.optional(),
+});
+
+export const paneInfoResponseSchema = z.object({
+  result: z.object({
+    pane: paneInfoSchema,
+  }),
 });
 
 const paneLayoutAreaSchema = z.object({
@@ -48,7 +55,9 @@ export const paneLayoutSchema = z.object({
 });
 
 export const splitPaneResponseSchema = z.object({
-  id: z.string().min(1),
+  result: z.object({
+    pane: paneInfoSchema,
+  }),
 });
 
 export const sessionCreatedPropertiesSchema = z.object({

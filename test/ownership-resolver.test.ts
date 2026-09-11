@@ -19,10 +19,10 @@ function createMockClient(): HerdrClient {
 
 function opencodePaneInfo(sessionId: string): PaneInfo {
   return {
-    id: PANE_ID,
+    pane_id: PANE_ID,
     agent_session: {
       agent: "opencode",
-      session_id: sessionId,
+      value: sessionId,
     },
   };
 }

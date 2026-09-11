@@ -48,7 +48,7 @@ function isOpenCodeRootSession(pane: PaneInfo): ResolvedRootSession {
   if (agentSession?.agent !== OPCODE_AGENT) {
     return { rootSessionId: undefined };
   }
-  const sessionId = agentSession.session_id;
+  const sessionId = agentSession.value;
   if (!sessionId) {
     return { rootSessionId: undefined };
   }

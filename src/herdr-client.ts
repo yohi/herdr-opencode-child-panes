@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { z } from "zod";
 import type { Logger } from "./logger.js";
-import { paneInfoSchema, paneLayoutSchema, splitPaneResponseSchema } from "./schemas.js";
+import { paneInfoResponseSchema, paneLayoutSchema, splitPaneResponseSchema } from "./schemas.js";
 import type { HerdrClient, PaneInfo, PaneLayout, SplitPaneInput } from "./types.js";
 
 const noopLogger: Logger = {
@@ -112,7 +112,8 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
 
   return {
     async getPane(paneId: string): Promise<PaneInfo | null> {
-      return runJson(["pane", "get", paneId], paneInfoSchema);
+      const response = await runJson(["pane", "get", paneId], paneInfoResponseSchema);
+      return response?.result.pane ?? null;
     },
 
     async getPaneLayout(paneId: string): Promise<PaneLayout | null> {
@@ -149,7 +150,7 @@ export function createHerdrClient(options: CreateHerdrClientOptions = {}): Herdr
         argv.push("--no-focus");
       }
       const result = await runJson(argv, splitPaneResponseSchema);
-      return result?.id ?? null;
+      return result?.result.pane.pane_id ?? null;
     },
 
     async runInPane(paneId: string, command: string): Promise<boolean> {
