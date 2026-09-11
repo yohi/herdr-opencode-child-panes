@@ -92,7 +92,7 @@ export HERDR_CHILD_PANES_DEBUG="${HERDR_CHILD_PANES_DEBUG:-true}"
 - **期待される挙動:**
   - `session.created` 時点ではペインを分割しない。ペインは子が最初の実アクティビティを見せた後に現れる。
   - `herdr pane layout` に子ペインがちょうど 1 つ追加される。
-- 子ペインの `agent_session.value` が OMO の子セッション ID と一致する。
+  - 子ペインの `agent_session.value` が OMO の子セッション ID と一致する。
   - メインペインがフォーカスを保持する（`--no-focus` 分割）。
 - **観測結果:** `NOT RUN`。
 - **備考:** 手動実行が必要。[シナリオを実行しなかった理由](#シナリオを実行しなかった理由)を参照。
