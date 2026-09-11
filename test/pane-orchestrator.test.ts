@@ -676,17 +676,18 @@ describe("createPaneOrchestrator", () => {
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
     });
 
-    it("resumes the session and cancels the close when activity arrives before the timeout", async () => {
+    it("keeps the close scheduled when a message event arrives after idle", async () => {
       const fixture = createFixture();
       await attachChild(fixture);
       await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
 
       await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
 
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
-      expect(vi.getTimerCount()).toBe(0);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("idle_pending");
+      expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(fixture.closePane).not.toHaveBeenCalled();
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
     });
 
     it("also resumes the session on an active status before the timeout", async () => {
@@ -716,6 +717,62 @@ describe("createPaneOrchestrator", () => {
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
     });
 
+    it("closes a child that becomes idle while its pane is still attaching", async () => {
+      const fixture = createFixture();
+      let releaseAttach: ((attached: boolean) => void) | undefined;
+      const attachStarted = new Promise<void>((resolve) => {
+        fixture.attach.mockImplementationOnce(
+          () =>
+            new Promise<boolean>((resolveAttach) => {
+              releaseAttach = resolveAttach;
+              resolve();
+            }),
+        );
+      });
+
+      await registerOwnedChild(fixture);
+      const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      await attachStarted;
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "idle"));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("spawning");
+
+      releaseAttach?.(true);
+      await spawning;
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("keeps the deferred close when a final activity event follows idle during attach", async () => {
+      const fixture = createFixture();
+      let releaseAttach: ((attached: boolean) => void) | undefined;
+      const attachStarted = new Promise<void>((resolve) => {
+        fixture.attach.mockImplementationOnce(
+          () =>
+            new Promise<boolean>((resolveAttach) => {
+              releaseAttach = resolveAttach;
+              resolve();
+            }),
+        );
+      });
+
+      await registerOwnedChild(fixture);
+      const spawning = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      await attachStarted;
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "idle"));
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+
+      releaseAttach?.(true);
+      await spawning;
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
     it("ignores a stale timer that fires after the session resumed", async () => {
       // The registry forgets the handle but never really cancels the timer,
       // simulating a stale fire after a resume.
@@ -723,7 +780,7 @@ describe("createPaneOrchestrator", () => {
       const fixture = createFixture({}, { registry: { clearTimeout: neverCancel } });
       await attachChild(fixture);
       await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
-      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
 
       await vi.advanceTimersByTimeAsync(1000);

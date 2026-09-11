@@ -150,6 +150,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const setTimeoutFn = options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
   const queue = createAsyncQueue();
   const spawnReservations = new Set<string>();
+  const idleDuringSpawn = new Set<string>();
   let disposed = false;
 
   function delay(ms: number): Promise<void> {
@@ -159,6 +160,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   }
 
   function fail(sessionId: string, reason: string): void {
+    idleDuringSpawn.delete(sessionId);
     registry.setFailureReason(sessionId, reason);
     registry.transitionTo(sessionId, "failed");
     logger.warn("Child pane lifecycle failure", { sessionId, reason });
@@ -182,6 +184,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   }
 
   async function closeSpawnedPane(sessionId: string, childPaneId: string): Promise<void> {
+    idleDuringSpawn.delete(sessionId);
     registry.setPaneId(sessionId, childPaneId);
     const closed = await herdrClient.closePane(childPaneId);
     if (closed) {
@@ -256,6 +259,16 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
         paneId: resize.paneId,
         direction: resize.direction,
         amount: resize.amount,
+      });
+    }
+
+    if (idleDuringSpawn.delete(sessionId)) {
+      if (registry.transitionTo(sessionId, "idle_pending")) {
+        scheduleIdleTimer(sessionId);
+      }
+      logger.debug("Child session was idle during attach: close scheduled", {
+        sessionId,
+        graceMs: config.idleGraceMs,
       });
     }
   }
@@ -412,6 +425,10 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!session) {
       return;
     }
+    if (session.state === "spawning") {
+      idleDuringSpawn.delete(sessionId);
+      return;
+    }
     if (session.state === "waiting_activity") {
       await enqueueSpawn(session);
       return;
@@ -425,7 +442,15 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!MEANINGFUL_ACTIVITY_EVENTS.has(event.type)) {
       return;
     }
-    await resumeOrSpawn(resolveSessionId(event));
+    const sessionId = resolveSessionId(event);
+    if (!sessionId) {
+      return;
+    }
+    const session = registry.get(sessionId);
+    if (!session || session.state !== "waiting_activity") {
+      return;
+    }
+    await enqueueSpawn(session);
   }
 
   async function handleSessionStatus(event: Event): Promise<void> {
@@ -489,9 +514,17 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
     const session = registry.get(sessionId);
+    if (!session) {
+      return;
+    }
+    if (session.state === "spawning") {
+      idleDuringSpawn.add(sessionId);
+      logger.debug("Child session idle during attach: close deferred", { sessionId });
+      return;
+    }
     // Only attached sessions go idle. The transition doubles as the
     // idempotency gate, so duplicate idle events never arm a second timer.
-    if (!session || session.state !== "attached") {
+    if (session.state !== "attached") {
       return;
     }
     if (!registry.transitionTo(sessionId, "idle_pending")) {
@@ -513,6 +546,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!session) {
       return;
     }
+    idleDuringSpawn.delete(sessionId);
     // Cancel a pending idle-close timer, if any.
     registry.clearTimer(sessionId);
     // A rejected transition means the session is already closing/closed or
@@ -558,6 +592,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       disposed = true;
       // Cancel idle timers without force-closing attached panes, then reject
       // any newly queued pane work.
+      idleDuringSpawn.clear();
       registry.clearAllTimers();
       queue.dispose();
     },
