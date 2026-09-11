@@ -288,7 +288,7 @@ describe("createAttachLauncher", () => {
     const getPane = vi.fn<HerdrClient["getPane"]>().mockResolvedValue({
       pane_id: "pane-2",
       agent: "opencode",
-    } as never);
+    });
     const client: HerdrClient = {
       getPane,
       getPaneLayout: vi.fn(),
