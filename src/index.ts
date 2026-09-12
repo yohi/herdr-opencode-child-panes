@@ -63,11 +63,13 @@ export interface PluginDependencies {
 }
 
 export const herdrChildPanesPlugin: Plugin = async (
-  { serverUrl, directory },
+  { client, serverUrl, directory },
   options?: PluginDependencies,
 ) => {
   const config = parseConfig();
-  const logger = createLogger(config.debug);
+  const logger = createLogger(config.debug, (entry) => {
+    void client.app.log({ body: entry });
+  });
   const prereqs = checkPrerequisites(serverUrl);
 
   if (!config.enabled || !prerequisitesMet(prereqs)) {

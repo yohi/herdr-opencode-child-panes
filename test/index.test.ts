@@ -68,18 +68,28 @@ describe("herdrChildPanesPlugin", () => {
 
     expect(hooks).toEqual({});
   });
-  it("logs only the server URL origin when the plugin activates", async () => {
+  it("writes the activation log to OpenCode server logs", async () => {
+    const appLog = vi.fn().mockResolvedValue({ data: true });
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
 
     try {
       await herdrChildPanesPlugin({
         serverUrl: new URL("https://user:secret@example.test:8443/opencode?token=secret#fragment"),
+        client: { app: { log: appLog } },
       } as Parameters<typeof herdrChildPanesPlugin>[0]);
 
-      expect(infoSpy).toHaveBeenCalledWith("[herdr-child-panes] Herdr child panes plugin active", {
-        paneId: "pane-1",
-        serverUrl: "https://example.test:8443",
+      expect(appLog).toHaveBeenCalledWith({
+        body: {
+          service: "herdr-child-panes",
+          level: "info",
+          message: "Herdr child panes plugin active",
+          extra: {
+            paneId: "pane-1",
+            serverUrl: "https://example.test:8443",
+          },
+        },
       });
+      expect(infoSpy).not.toHaveBeenCalled();
     } finally {
       infoSpy.mockRestore();
     }
@@ -88,6 +98,11 @@ describe("herdrChildPanesPlugin", () => {
   it("ignores session.created events without properties", async () => {
     const hooks = await herdrChildPanesPlugin({
       serverUrl: new URL("http://localhost:3000"),
+      client: {
+        app: {
+          log: () => Promise.resolve({ data: true }),
+        },
+      },
     } as Parameters<typeof herdrChildPanesPlugin>[0]);
     const malformedEvent = {
       type: "session.created",
