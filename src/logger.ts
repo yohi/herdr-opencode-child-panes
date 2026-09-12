@@ -10,7 +10,7 @@ interface LogEntry {
   readonly extra?: Record<string, unknown>;
 }
 
-type LogSink = (entry: LogEntry) => void;
+type LogSink = (entry: LogEntry) => void | Promise<void>;
 
 export interface Logger {
   debug(message: string, ...args: unknown[]): void;
@@ -40,6 +40,11 @@ function createLogEntry(level: LogLevel, message: string, args: readonly unknown
   };
 }
 
+function discardLogFailure(error: unknown): void {
+  // Logging is best effort; reporting the failure through the console would recreate the TUI issue.
+  void error;
+}
+
 export function createLogger(debug: boolean, sink?: LogSink): Logger {
   function write(level: LogLevel, message: string, args: readonly unknown[]): void {
     if (level === "debug" && !debug) {
@@ -47,7 +52,10 @@ export function createLogger(debug: boolean, sink?: LogSink): Logger {
     }
 
     if (sink) {
-      sink(createLogEntry(level, message, args));
+      const result = sink(createLogEntry(level, message, args));
+      if (result !== undefined) {
+        void result.catch(discardLogFailure);
+      }
       return;
     }
 

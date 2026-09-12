@@ -49,4 +49,28 @@ describe("createLogger", () => {
       expect(consoleSpy).not.toHaveBeenCalled();
     }
   });
+
+  it("does not send debug logs when debug mode is disabled", () => {
+    const sink = vi.fn();
+    const logger = createLogger(false, sink);
+
+    logger.debug("debug message", { paneId: "pane-1" });
+
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it("consumes asynchronous sink failures without an unhandled rejection", async () => {
+    const pendingLog = Promise.reject(new Error("log unavailable"));
+    const catchSpy = vi.spyOn(pendingLog, "catch");
+    const sink = vi.fn(() => pendingLog);
+    const logger = createLogger(true, sink);
+
+    try {
+      logger.info("info message");
+      expect(sink).toHaveBeenCalledTimes(1);
+      expect(catchSpy).toHaveBeenCalledWith(expect.any(Function));
+    } finally {
+      await pendingLog.catch(() => undefined);
+    }
+  });
 });

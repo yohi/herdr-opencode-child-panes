@@ -57,6 +57,13 @@ function prerequisitesMet(prereqs: RuntimePrerequisites): boolean {
   );
 }
 
+function loggablePrerequisites(prereqs: RuntimePrerequisites) {
+  return {
+    ...prereqs,
+    serverUrl: prereqs.serverUrl?.origin,
+  };
+}
+
 export interface PluginDependencies {
   readonly registry?: ChildSessionRegistry;
   readonly herdrClient?: HerdrClient;
@@ -67,15 +74,15 @@ export const herdrChildPanesPlugin: Plugin = async (
   options?: PluginDependencies,
 ) => {
   const config = parseConfig();
-  const logger = createLogger(config.debug, (entry) => {
-    void client.app.log({ body: entry });
+  const logger = createLogger(config.debug, async (entry) => {
+    await client.app.log({ body: entry });
   });
   const prereqs = checkPrerequisites(serverUrl);
 
   if (!config.enabled || !prerequisitesMet(prereqs)) {
     logger.debug("Plugin disabled: runtime prerequisites not satisfied", {
       config,
-      prereqs,
+      prereqs: loggablePrerequisites(prereqs),
     });
     return {};
   }

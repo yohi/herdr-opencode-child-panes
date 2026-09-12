@@ -35,6 +35,7 @@ describe("herdrChildPanesPlugin", () => {
     "HERDR_PANE_ID",
     "HERDR_CHILD_PANES",
     "HERDR_CHILD_PANES_IDLE_MS",
+    "HERDR_CHILD_PANES_DEBUG",
   ] as const;
 
   beforeEach(() => {
@@ -93,6 +94,30 @@ describe("herdrChildPanesPlugin", () => {
     } finally {
       infoSpy.mockRestore();
     }
+  });
+  it("sanitizes the server URL in disabled debug logs", async () => {
+    process.env.HERDR_CHILD_PANES = "false";
+    process.env.HERDR_CHILD_PANES_DEBUG = "true";
+    const appLog = vi.fn().mockResolvedValue({ data: true });
+    const serverUrl = "https://user:secret@example.test:8443/opencode?token=secret#fragment";
+
+    await herdrChildPanesPlugin({
+      serverUrl: new URL(serverUrl),
+      client: { app: { log: appLog } },
+    } as Parameters<typeof herdrChildPanesPlugin>[0]);
+
+    expect(appLog).toHaveBeenCalledWith({
+      body: expect.objectContaining({
+        level: "debug",
+        extra: expect.objectContaining({
+          prereqs: expect.objectContaining({
+            serverUrl: "https://example.test:8443",
+          }),
+        }),
+      }),
+    });
+    expect(JSON.stringify(appLog.mock.calls)).not.toContain("secret");
+    expect(JSON.stringify(appLog.mock.calls)).not.toContain("fragment");
   });
 
   it("ignores session.created events without properties", async () => {
