@@ -73,4 +73,14 @@ describe("createLogger", () => {
       await pendingLog.catch(() => undefined);
     }
   });
+
+  it("consumes synchronous sink failures without interrupting the caller", () => {
+    const sink = vi.fn(() => {
+      throw new Error("log unavailable");
+    });
+    const logger = createLogger(true, sink);
+
+    expect(() => logger.info("info message")).not.toThrow();
+    expect(sink).toHaveBeenCalledTimes(1);
+  });
 });

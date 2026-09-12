@@ -25,12 +25,12 @@ function isLogExtra(value: unknown): value is Record<string, unknown> {
 
 function createLogEntry(level: LogLevel, message: string, args: readonly unknown[]): LogEntry {
   const [firstArg] = args;
-  const extra =
-    args.length === 1 && isLogExtra(firstArg)
-      ? firstArg
-      : args.length > 0
-        ? { args: [...args] }
-        : undefined;
+  let extra: Record<string, unknown> | undefined;
+  if (args.length === 1 && isLogExtra(firstArg)) {
+    extra = firstArg;
+  } else if (args.length > 0) {
+    extra = { args: [...args] };
+  }
 
   return {
     service: "herdr-child-panes",
@@ -52,9 +52,13 @@ export function createLogger(debug: boolean, sink?: LogSink): Logger {
     }
 
     if (sink) {
-      const result = sink(createLogEntry(level, message, args));
-      if (result !== undefined) {
-        void result.catch(discardLogFailure);
+      try {
+        const result = sink(createLogEntry(level, message, args));
+        if (result !== undefined) {
+          void result.catch(discardLogFailure);
+        }
+      } catch (error) {
+        discardLogFailure(error);
       }
       return;
     }

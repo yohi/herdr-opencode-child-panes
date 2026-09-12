@@ -69,6 +69,17 @@ describe("herdrChildPanesPlugin", () => {
 
     expect(hooks).toEqual({});
   });
+  it.each([
+    ["client", { serverUrl: undefined }],
+    ["app", { serverUrl: undefined, client: {} }],
+    ["log", { serverUrl: undefined, client: { app: {} } }],
+  ])("does not throw when %s is absent during debug logging", async (_missing, input) => {
+    process.env.HERDR_CHILD_PANES_DEBUG = "true";
+
+    await expect(
+      herdrChildPanesPlugin(input as Parameters<typeof herdrChildPanesPlugin>[0]),
+    ).resolves.toEqual({});
+  });
   it("writes the activation log to OpenCode server logs", async () => {
     const appLog = vi.fn().mockResolvedValue({ data: true });
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});

@@ -75,7 +75,7 @@ export const herdrChildPanesPlugin: Plugin = async (
 ) => {
   const config = parseConfig();
   const logger = createLogger(config.debug, async (entry) => {
-    await client.app.log({ body: entry });
+    await client?.app?.log?.({ body: entry });
   });
   const prereqs = checkPrerequisites(serverUrl);
 
