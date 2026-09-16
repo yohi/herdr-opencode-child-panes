@@ -557,6 +557,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
     const session = registry.get(sessionId);
     if (!session) {
+      pendingSpawnRequests.delete(sessionId);
       return;
     }
     idleDuringSpawn.delete(sessionId);

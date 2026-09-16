@@ -229,6 +229,31 @@ describe("createPaneOrchestrator", () => {
     await assertReplaysPendingSpawn(fixture, statusEvent(CHILD_ID, "busy"));
   });
 
+  it.each([
+    { name: "activity", event: activityEvent(CHILD_ID) },
+    { name: "active status", event: statusEvent(CHILD_ID, "busy") },
+  ])("does not replay pending $name after deletion", async ({ event }) => {
+    let resolveOwnership: ((owned: boolean) => void) | undefined;
+    const fixture = createFixture();
+    fixture.isOwnedChild.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveOwnership = resolve;
+        }),
+    );
+
+    const created = fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
+    await vi.waitFor(() => expect(fixture.isOwnedChild).toHaveBeenCalledTimes(1));
+
+    await fixture.orchestrator.handleEvent(event);
+    await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+    resolveOwnership?.(true);
+    await created;
+
+    expect(fixture.splitPane).not.toHaveBeenCalled();
+    expect(fixture.attach).not.toHaveBeenCalled();
+  });
+
   it("splits once and attaches on the first meaningful activity", async () => {
     const fixture = createFixture();
     await registerOwnedChild(fixture);
