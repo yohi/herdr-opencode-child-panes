@@ -186,6 +186,28 @@ async function startDelayedAttachAndIdle(fixture: Fixture): Promise<{
   };
 }
 
+async function assertReplaysPendingSpawn(fixture: Fixture, event: Event): Promise<void> {
+  let resolveOwnership: ((owned: boolean) => void) | undefined;
+  fixture.isOwnedChild.mockImplementationOnce(
+    () =>
+      new Promise<boolean>((resolve) => {
+        resolveOwnership = resolve;
+      }),
+  );
+
+  const created = fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
+  await vi.waitFor(() => expect(fixture.isOwnedChild).toHaveBeenCalledTimes(1));
+
+  await fixture.orchestrator.handleEvent(event);
+  expect(fixture.splitPane).not.toHaveBeenCalled();
+
+  resolveOwnership?.(true);
+  await created;
+
+  expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+}
+
 describe("createPaneOrchestrator", () => {
   it("keeps a created-only session waiting without splitting", async () => {
     const fixture = createFixture();
@@ -193,6 +215,41 @@ describe("createPaneOrchestrator", () => {
     await fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
 
     expect(fixture.registry.get(CHILD_ID)?.state).toBe("waiting_activity");
+    expect(fixture.splitPane).not.toHaveBeenCalled();
+    expect(fixture.attach).not.toHaveBeenCalled();
+  });
+
+  it("replays activity that arrives while child ownership is resolving", async () => {
+    const fixture = createFixture();
+    await assertReplaysPendingSpawn(fixture, activityEvent(CHILD_ID));
+  });
+
+  it("replays active status that arrives while child ownership is resolving", async () => {
+    const fixture = createFixture();
+    await assertReplaysPendingSpawn(fixture, statusEvent(CHILD_ID, "busy"));
+  });
+
+  it.each([
+    { name: "activity", event: activityEvent(CHILD_ID) },
+    { name: "active status", event: statusEvent(CHILD_ID, "busy") },
+  ])("does not replay pending $name after deletion", async ({ event }) => {
+    let resolveOwnership: ((owned: boolean) => void) | undefined;
+    const fixture = createFixture();
+    fixture.isOwnedChild.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveOwnership = resolve;
+        }),
+    );
+
+    const created = fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
+    await vi.waitFor(() => expect(fixture.isOwnedChild).toHaveBeenCalledTimes(1));
+
+    await fixture.orchestrator.handleEvent(event);
+    await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+    resolveOwnership?.(true);
+    await created;
+
     expect(fixture.splitPane).not.toHaveBeenCalled();
     expect(fixture.attach).not.toHaveBeenCalled();
   });

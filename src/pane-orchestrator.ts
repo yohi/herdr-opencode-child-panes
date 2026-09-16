@@ -139,6 +139,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const queue = createAsyncQueue();
   const spawnReservations = new Set<string>();
   const idleDuringSpawn = new Set<string>();
+  const pendingSpawnRequests = new Set<string>();
   const childPaneIds: string[] = [];
   let disposed = false;
 
@@ -394,11 +395,13 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
     const parentId = parsed.data.info.parentID;
     if (!parentId) {
+      pendingSpawnRequests.delete(sessionId);
       return;
     }
 
     const owned = await ownershipResolver.isOwnedChild({ sessionId, parentId });
     if (!owned) {
+      pendingSpawnRequests.delete(sessionId);
       logger.debug("Child session not owned", { sessionId, parentId });
       return;
     }
@@ -408,6 +411,13 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
     logger.info("Child session registered", { sessionId, parentId });
+
+    if (pendingSpawnRequests.delete(sessionId)) {
+      const registeredSession = registry.get(sessionId);
+      if (registeredSession) {
+        await enqueueSpawn(registeredSession);
+      }
+    }
   }
 
   function resumeFromIdlePending(sessionId: string): void {
@@ -422,6 +432,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
     const session = registry.get(sessionId);
     if (!session) {
+      pendingSpawnRequests.add(sessionId);
       return;
     }
     if (session.state === "spawning") {
@@ -447,6 +458,9 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
     const session = registry.get(sessionId);
     if (!session || session.state !== "waiting_activity") {
+      if (!session) {
+        pendingSpawnRequests.add(sessionId);
+      }
       return;
     }
     await enqueueSpawn(session);
@@ -543,6 +557,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
     const session = registry.get(sessionId);
     if (!session) {
+      pendingSpawnRequests.delete(sessionId);
       return;
     }
     idleDuringSpawn.delete(sessionId);
@@ -592,6 +607,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       // Cancel idle timers without force-closing attached panes, then reject
       // any newly queued pane work.
       idleDuringSpawn.clear();
+      pendingSpawnRequests.clear();
       registry.clearAllTimers();
       queue.dispose();
     },
