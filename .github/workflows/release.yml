@@ -62,13 +62,19 @@ jobs:
           scope: "@${{ github.repository_owner }}"
 
       - name: Publish to GitHub Packages
-        run: npm publish --ignore-scripts
+        run: |
+          PACKAGE_SPEC=$(node -p 'const packageJson = require("./package.json"); packageJson.name + "@" + packageJson.version')
+          if npm view "$PACKAGE_SPEC" version --registry="https://npm.pkg.github.com" >/dev/null 2>&1; then
+            echo "$PACKAGE_SPEC is already published; skipping npm publish"
+          else
+            npm publish --ignore-scripts
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pack and upload release asset
         run: |
           PACKAGE_FILE=$(npm pack)
-          gh release upload "${{ github.event.release.tag_name }}" "$PACKAGE_FILE"
+          gh release upload --clobber "${{ github.event.release.tag_name }}" "$PACKAGE_FILE"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

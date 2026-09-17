@@ -88,7 +88,8 @@ In the publication job, run `npm ci`, `npm run lint`, `npm run typecheck`,
 setup-node step configured with
 `registry-url: https://npm.pkg.github.com` and
 `scope: @${{ github.repository_owner }}`, then run
-`npm publish --ignore-scripts` with:
+an exact package name/version lookup. Skip `npm publish --ignore-scripts` when
+that version is already present; otherwise publish with:
 
 ```yaml
 env:
@@ -99,8 +100,9 @@ env:
 
 Run `npm pack`, store the generated filename in `PACKAGE_FILE`, and upload it
 with `gh release upload ${{ github.event.release.tag_name }} $PACKAGE_FILE`,
-using `GITHUB_TOKEN` in the environment. Rerunning the publication workflow must
-retry this job without creating another release.
+using `GITHUB_TOKEN` in the environment. Pass `--clobber` so rerunning the
+publication workflow replaces an existing asset without creating another
+release.
 
 ### Task 3: Deterministic Verification
 

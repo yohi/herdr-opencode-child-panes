@@ -57,8 +57,12 @@ Create `.github/workflows/release.yml` with separate release and publication job
   Packages and publish with `GITHUB_TOKEN`. Keeping registry setup after
   dependency installation prevents unscoped public dependencies from being
   requested from GitHub Packages.
-- Create an npm tarball and upload it to the event's GitHub Release using the
-  preinstalled GitHub CLI.
+- Before publishing, query the exact package name and version and skip
+  `npm publish` when that version already exists. This makes reruns safe after
+  a successful package publication.
+- Create an npm tarball and upload it to the event's GitHub Release with
+  `gh release upload --clobber`, allowing an existing asset to be replaced on a
+  retry.
 - Pin every third-party action to the SHAs documented by the release workflow
   reference.
 
@@ -73,6 +77,8 @@ release or changing the release tag.
   before `npm publish` in the publication job.
 - Release creation and publication are separate event runs, so a failed
   publication can be rerun without recreating the release.
+- Publication checks the exact package version before `npm publish`, and asset
+  upload uses `--clobber`, so reruns are idempotent after either step succeeds.
 - Authentication uses the ephemeral `GITHUB_TOKEN`; no new repository secret is
   required.
 - The release job cannot publish packages because it does not receive
