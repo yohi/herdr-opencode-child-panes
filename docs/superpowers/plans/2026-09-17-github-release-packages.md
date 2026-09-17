@@ -96,9 +96,9 @@ unscoped dependencies are installed from npmjs.org.
 
 - [x] **Step 3: Add validation and publication**
 
-In the publication job, run `npm ci`, `npm run lint`, `npm run typecheck`,
-`npm run test`, and `npm run build` in that order. Publish with a second
-setup-node step configured with
+In the publication job, run `npm ci --ignore-scripts`, `npm run lint`,
+`npm run typecheck`, `npm run test`, and `npm run build` in that order. Use a
+second setup-node step configured with
 `registry-url: https://npm.pkg.github.com` and
 `scope: @${{ github.repository_owner }}`, then run
 an exact package name/version lookup. Skip `npm publish --ignore-scripts` when
