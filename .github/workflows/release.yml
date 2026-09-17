@@ -4,15 +4,18 @@ on:
   push:
     branches:
       - master
+  release:
+    types: [published]
 
-permissions:
-  contents: write
-  pull-requests: write
-  packages: write
+permissions: {}
 
 jobs:
   release-please:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-slim
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c # v4
         id: release
@@ -20,39 +23,38 @@ jobs:
           release-type: node
           target-branch: master
 
+  publish:
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-slim
+    permissions:
+      contents: write
+      packages: write
+    steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        if: ${{ steps.release.outputs.release_created }}
         with:
-          ref: ${{ steps.release.outputs.tag_name }}
+          ref: ${{ github.event.release.tag_name }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: ${{ steps.release.outputs.release_created }}
         with:
           node-version: "20"
           cache: npm
 
       - name: Install dependencies
-        if: ${{ steps.release.outputs.release_created }}
         run: npm ci
 
       - name: Run lint
-        if: ${{ steps.release.outputs.release_created }}
         run: npm run lint
 
       - name: Run typecheck
-        if: ${{ steps.release.outputs.release_created }}
         run: npm run typecheck
 
       - name: Run tests
-        if: ${{ steps.release.outputs.release_created }}
         run: npm run test
 
       - name: Build plugin
-        if: ${{ steps.release.outputs.release_created }}
         run: npm run build
 
       - name: Configure GitHub Packages
-        if: ${{ steps.release.outputs.release_created }}
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
@@ -60,15 +62,13 @@ jobs:
           scope: "@${{ github.repository_owner }}"
 
       - name: Publish to GitHub Packages
-        if: ${{ steps.release.outputs.release_created }}
         run: npm publish --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pack and upload release asset
-        if: ${{ steps.release.outputs.release_created }}
         run: |
           PACKAGE_FILE=$(npm pack)
-          gh release upload "${{ steps.release.outputs.tag_name }}" "$PACKAGE_FILE"
+          gh release upload "${{ github.event.release.tag_name }}" "$PACKAGE_FILE"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

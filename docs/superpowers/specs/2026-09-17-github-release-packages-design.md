@@ -3,7 +3,8 @@
 ## Goal
 
 Automate release pull requests, GitHub Releases, GitHub Packages publication,
-and npm tarball upload for this Node.js plugin using release-please.
+and npm tarball upload for this Node.js plugin using release-please, with
+publication that can be retried independently.
 
 ## Repository Findings
 
@@ -41,34 +42,41 @@ and npm tarball upload for this Node.js plugin using release-please.
 
 ### Release Workflow
 
-Create `.github/workflows/release.yml` with these properties:
+Create `.github/workflows/release.yml` with separate release and publication jobs:
 
-- Trigger on pushes to `master`.
-- Use `runs-on: ubuntu-slim`.
-- Grant `contents: write`, `pull-requests: write`, and `packages: write`.
+- Trigger the release job on pushes to `master`, and the publication job on
+  `release.published`.
+- Use `runs-on: ubuntu-slim` for both jobs.
+- Give the release job `contents: write` and `pull-requests: write`; give the
+  publication job `contents: write` and `packages: write`.
 - Run `googleapis/release-please-action` with the pinned v4 SHA,
-  `release-type: node`, and `target-branch: master`.
-- Only after `release_created`, check out the generated tag, configure Node.js
-  20, install dependencies from the normal npm registry, run the existing lint,
-  typecheck, test, and build scripts, then configure GitHub Packages and publish
-  with `GITHUB_TOKEN`. Keeping registry setup after dependency installation
-  prevents unscoped public dependencies from being requested from GitHub
-  Packages.
-- Create an npm tarball and upload it to the same GitHub Release using the
+  `release-type: node`, and `target-branch: master` in the release job.
+- In the publication job, check out `github.event.release.tag_name`, configure
+  Node.js 20, install dependencies from the normal npm registry, run the
+  existing lint, typecheck, test, and build scripts, then configure GitHub
+  Packages and publish with `GITHUB_TOKEN`. Keeping registry setup after
+  dependency installation prevents unscoped public dependencies from being
+  requested from GitHub Packages.
+- Create an npm tarball and upload it to the event's GitHub Release using the
   preinstalled GitHub CLI.
 - Pin every third-party action to the SHAs documented by the release workflow
   reference.
 
 The release-please action remains responsible for release PR creation and tag
-creation. Publishing is conditional on a newly created release, so ordinary
-pushes only update release metadata and do not publish an artifact.
+creation. Publication is driven by the published-release event, so a failed
+publication can be retried by rerunning that workflow without creating another
+release or changing the release tag.
 
 ### Error Handling and Security
 
-- A failed build or test stops publication because all packaging steps are in
-  the release-created path and run before `npm publish`.
+- A failed build or test stops publication because all packaging steps run
+  before `npm publish` in the publication job.
+- Release creation and publication are separate event runs, so a failed
+  publication can be rerun without recreating the release.
 - Authentication uses the ephemeral `GITHUB_TOKEN`; no new repository secret is
   required.
+- The release job cannot publish packages because it does not receive
+  `packages: write`.
 - The package scope matches the GitHub repository owner, as required by GitHub
   Packages.
 - No credentials are written to files or command output.
