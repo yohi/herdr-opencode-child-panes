@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/yohi/herdr-opencode-child-panes/compare/v1.0.0...v1.0.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* リリース公開時のlint失敗を修正 ([9651fa5](https://github.com/yohi/herdr-opencode-child-panes/commit/9651fa5e9e4ca0aa51e9d8c279e08fc918252bc9))
+* リリース公開時のlint失敗を修正 ([82c67a6](https://github.com/yohi/herdr-opencode-child-panes/commit/82c67a6752edaa38a53cb882c32b2166388e451f))
+
 ## 1.0.0 (2026-09-17)
 
 
