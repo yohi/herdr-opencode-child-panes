@@ -1,5 +1,5 @@
 {
-  "name": "herdr-opencode-child-panes",
+  "name": "@yohi/herdr-opencode-child-panes",
   "version": "0.1.0",
   "description": "OpenCode companion plugin that visualizes accepted child sessions in Herdr panes",
   "type": "module",
@@ -12,6 +12,9 @@
     }
   },
   "files": ["dist"],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
