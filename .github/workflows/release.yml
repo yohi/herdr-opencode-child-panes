@@ -13,9 +13,13 @@ jobs:
   release-please:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c # v4
         id: release
@@ -24,15 +28,19 @@ jobs:
           target-branch: master
 
   publish:
-    if: ${{ github.event_name == 'release' }}
+    needs: release-please
+    if: >-
+      ${{ always() && (github.event_name == 'release' ||
+      needs.release-please.outputs.release_created == 'true') }}
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     permissions:
       contents: write
       packages: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || needs.release-please.outputs.tag_name }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -75,6 +83,7 @@ jobs:
       - name: Pack and upload release asset
         run: |
           PACKAGE_FILE=$(npm pack)
-          gh release upload --clobber "${{ github.event.release.tag_name }}" "$PACKAGE_FILE"
+          gh release upload --clobber "$TAG_NAME" "$PACKAGE_FILE"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event_name == 'release' && github.event.release.tag_name || needs.release-please.outputs.tag_name }}

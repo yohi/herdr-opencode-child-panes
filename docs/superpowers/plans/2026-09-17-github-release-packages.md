@@ -4,7 +4,7 @@
 
 **Goal:** Release the Node.js plugin through release-please, publish the scoped npm package to GitHub Packages, and attach the npm tarball to the GitHub Release with retryable publication.
 
-**Architecture:** Keep release PR and tag creation in `googleapis/release-please-action` on pushes to `master`. A separate job triggered by `release.published` checks out the release tag, validates and builds the package, publishes it to GitHub Packages, and uploads the tarball as a release asset so publication can be rerun independently.
+**Architecture:** Keep release PR and tag creation in `googleapis/release-please-action` on pushes to `master`. Expose its release outputs to a dependent publication job so releases created with `GITHUB_TOKEN` are published in the same workflow run; retain the `release.published` path for externally created releases whose token permits workflow triggering.
 
 **Tech Stack:** GitHub Actions, release-please v4, npm, Node.js 20, GitHub Packages, GitHub CLI.
 
@@ -14,7 +14,8 @@
 - The package name must be `@yohi/herdr-opencode-child-panes` for GitHub Packages scope matching.
 - The registry is `https://npm.pkg.github.com` and authentication uses `${{ secrets.GITHUB_TOKEN }}`.
 - The default branch is `master`, detected from `origin/HEAD`.
-- The release runner is `ubuntu-slim`.
+- Both jobs use the standard GitHub-hosted `ubuntu-slim` runner with
+  `timeout-minutes: 15`; its hard job limit is 15 minutes.
 - Third-party actions use the pinned SHAs from the release workflow reference.
 - Existing `.codegraph/` and `opencodePlugin/` untracked changes are not modified.
 - No commit is created unless explicitly requested.
@@ -64,22 +65,34 @@ Packages registry URL.
 - [x] **Step 1: Add the release-please job**
 
 Create a workflow with `push.branches: [master]`, a `release.published` trigger,
-job-level permissions, and this pinned action configuration in the release job:
+job-level permissions, `timeout-minutes: 15`, and these release job outputs and
+pinned action configuration:
 
 ```yaml
-- uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c
-  id: release
-  with:
-    release-type: node
-    target-branch: master
+release-please:
+  timeout-minutes: 15
+  outputs:
+    release_created: ${{ steps.release.outputs.release_created }}
+    tag_name: ${{ steps.release.outputs.tag_name }}
+  steps:
+    - uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c
+      id: release
+      with:
+        release-type: node
+        target-branch: master
 ```
 
 - [x] **Step 2: Add conditional checkout and npm setup**
 
-In the publication job, use the pinned checkout and setup-node actions, check out
-`github.event.release.tag_name`, select Node.js 20, and enable npm caching. Keep
-the initial setup-node registry at the normal npm default so unscoped
-dependencies are installed from npmjs.org.
+In the publication job, declare `needs: release-please` and run it when
+`github.event_name == 'release'` or
+`needs.release-please.outputs.release_created == 'true'`, using `always()` so
+the release-event path remains available when the release job is skipped. This
+path applies when the release event is delivered by its creating token. Use
+the pinned checkout and setup-node actions, check out the release-event tag or
+`needs.release-please.outputs.tag_name`, select Node.js 20, and enable npm
+caching. Keep the initial setup-node registry at the normal npm default so
+unscoped dependencies are installed from npmjs.org.
 
 - [x] **Step 3: Add validation and publication**
 
@@ -99,10 +112,12 @@ env:
 - [x] **Step 4: Upload the release asset**
 
 Run `npm pack`, store the generated filename in `PACKAGE_FILE`, and upload it
-with `gh release upload ${{ github.event.release.tag_name }} $PACKAGE_FILE`,
-using `GITHUB_TOKEN` in the environment. Pass `--clobber` so rerunning the
-publication workflow replaces an existing asset without creating another
-release.
+with `gh release upload --clobber "$TAG_NAME" "$PACKAGE_FILE"`. Set `TAG_NAME`
+in the step's `env` from the release event tag or
+`needs.release-please.outputs.tag_name`, and use `GITHUB_TOKEN` in the
+environment. Passing the tag through `env` avoids interpolating event data into
+the shell script. Pass `--clobber` so rerunning the publication job replaces an
+existing asset without creating another release.
 
 ### Task 3: Deterministic Verification
 
@@ -118,9 +133,12 @@ release.
 - [x] **Step 1: Validate workflow structure**
 
 Parse `.github/workflows/release.yml` with an available YAML parser and inspect
-that the push trigger is `master`, the release trigger is `published`, both
-jobs use `ubuntu-slim`, release-please lacks `packages: write`, the publication
-job has `packages: write`, and publication uses the release event tag.
+that the push trigger is `master`, the release trigger is `published`, the
+release job exposes `release_created` and `tag_name`, the publication job
+depends on release-please and handles both trigger paths, both jobs use
+`ubuntu-slim` with a 15-minute timeout, release-please lacks `packages: write`,
+the publication job has `packages: write`, and the upload command uses the
+quoted `TAG_NAME` environment variable.
 
 - [x] **Step 2: Run repository checks**
 
