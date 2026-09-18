@@ -1,122 +1,97 @@
 # herdr-opencode-child-panes
 
-[OpenCode](https://opencode.ai) の子セッション（サブエージェント）を [Herdr](https://github.com/herdrdev/herdr) のペインとして可視化するコンパニオンプラグインです。
+[日本語](README.ja.md)
 
-Herdr のペイン内で動作する OpenCode セッションがサブエージェントを起動したとき、このプラグインは次のように振る舞います:
+[![CI](https://github.com/yohi/herdr-opencode-child-panes/actions/workflows/ci.yml/badge.svg)](https://github.com/yohi/herdr-opencode-child-panes/actions/workflows/ci.yml)
+[![Release](https://github.com/yohi/herdr-opencode-child-panes/actions/workflows/release.yml/badge.svg)](https://github.com/yohi/herdr-opencode-child-panes/actions/workflows/release.yml)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-1. OpenCode の `session.created` イベントから子セッションを検出し、ルートセッションをホストするペイン配下かどうかを判定する。
-2. 最初の実アクティビティ（`message.updated` / `message.part.updated`）を待つ。
-3. 呼び出し元ペインを右方向へ2:1（main:右カラム）で分割し、メインペインのフォーカスを維持したまま、新しいペイン内で `opencode attach` により子セッションをアタッチする。2つ目以降の子ペインは右カラム内で上下に等分する。
-4. 子セッションが猶予期間を超えてアイドルするか削除されたら、ペインを閉じる。
+An [OpenCode](https://opencode.ai) companion plugin that visualizes accepted child sessions (subagents) as [Herdr](https://github.com/herdrdev/herdr) panes.
 
-## アーキテクチャと境界
+When an OpenCode session running inside a Herdr pane launches a subagent, this plugin detects it from `session.created`, waits for the first real activity, splits the caller pane to the right, and attaches the child session with `opencode attach`. Additional child panes stack in the right column. Idle or deleted sessions close their panes automatically.
 
-各関心事が独立してテスト可能になるようレイヤー化されており、プラグインは Herdr や OpenCode の内部構造に依存しません:
+## Quick Start
 
-| モジュール | 責務 |
-| --- | --- |
-| `src/index.ts` | プラグインのエントリポイント。実行時前提条件のチェックと依存の組み立て。 |
-| `src/config.ts` | 環境変数を型付き設定へパース。不正値はデフォルトへフォールバック。 |
-| `src/child-session.ts` / `src/child-session-registry.ts` | 子セッションの状態機械とレジストリ（状態・遷移規則・タイマー）。 |
-| `src/root-session-resolver.ts` | 呼び出し元 Herdr ペイン配下の OpenCode ルートセッションを解決（短期 TTL キャッシュ）。 |
-| `src/ownership-resolver.ts` | 生成されたセッションが所有する子か追跡対象の子孫かを判定。 |
-| `src/event-resolver.ts` | OpenCode イベントからセッション ID を抽出。未文書の形状も防御的に処理。 |
-| `src/direction-policy.ts` | 旧来の方向ポリシー。固定レイアウトの子ペイン生成では使用しない。 |
-| `src/shell-quote.ts` | ペイン内で実行するコマンドのシェル引用。 |
-| `src/attach-launcher.ts` | `opencode attach` の構築と実行。ログからのクレデンシャル除去。 |
-| `src/herdr-client.ts` | Herdr CLI のアダプタ（`pane get` / `layout` / `split` / `resize` / `run` / `close`）。 |
-| `src/pane-orchestrator.ts` | ライフサイクル駆動: アクティビティ起点の分割/アタッチ、アイドル掃除、リトライ、容量上限。 |
-| `src/async-queue.ts` | Herdr ミューテーションを直列化し、並行イベントの交差を防ぐ。 |
+### Requirements
 
-制御フローにおいて OpenCode の HTTP API は使わず、`@opencode-ai/plugin` のフック経由のイベントのみを受け取ります。Herdr へのアクセスはすべて CLI アダプタ経由です。
+- Node.js 20 or later
+- `herdr` on your `PATH`
+- OpenCode 1.17.x or newer with the plugin hooks consumed by this plugin
+- The plugin must run inside a Herdr pane that hosts the OpenCode root session
 
-## 要件
+### Install
 
-- Node.js 20 以降
-- `herdr` が `PATH` 上にある Herdr 環境
-- `session.created` / `session.status`（`idle` を含む）/ `session.idle` / `session.deleted` / `message.updated` / `message.part.updated` を報告する OpenCode（OpenCode 1.18.x で動作確認）
-- プラグインは OpenCode ルートセッションをホストする Herdr ペイン内で実行されること
+1. Register the OpenCode agent with Herdr:
 
-## インストール
+   ```sh
+   herdr integration install opencode
+   ```
 
-### 1. Herdr 統合のインストール
+2. Build and install the plugin into OpenCode's plugin directory:
 
-ペインが OpenCode セッションをホストできるよう、OpenCode エージェントを Herdr に登録します:
+   ```sh
+   npm run build
+   cp -r dist <opencode-plugins-dir>/herdr-opencode-child-panes
+   ```
 
-```sh
-herdr integration install opencode
+3. Restart OpenCode. The next time a root session inside a Herdr pane spawns a subagent, the plugin creates and attaches a child pane.
+
+## Features
+
+- Detects child sessions from OpenCode events, no HTTP API calls required
+- Splits the caller pane and attaches children with `opencode attach`
+- Stacks multiple child panes in a fixed right-column layout
+- Closes idle or deleted child panes automatically
+- Respects a configurable maximum number of child panes
+- Isolates failures so a Herdr CLI error cannot crash OpenCode
+- Compatible with sessions dispatched by OMO without a private dependency on OMO
+
+## How It Works
+
+The plugin consumes OpenCode events through `@opencode-ai/plugin` hooks and drives the Herdr CLI through a thin adapter. It keeps a small registry of child sessions, splits panes when activity starts, and cleans them up on idle or deletion. For the module map, control flow, and design invariants, see [docs/architecture.md](docs/architecture.md).
+
+## Usage
+
+Once the plugin is installed, use OpenCode normally inside a Herdr pane. For example, ask the agent to dispatch a subagent:
+
+```text
+Use a subagent to summarize README.md.
 ```
 
-### 2. OpenCode コンパニオンプラグインとしてインストール
+When the subagent starts, a new pane appears to the right and runs `opencode attach <child-session-id>`. The main pane keeps focus. When the child session goes idle or is deleted, its pane closes automatically.
 
-プラグインをビルドし、`dist/` を OpenCode の設定ディレクトリ配下のプラグインディレクトリへ配置します（正確な配置先は利用中の OpenCode のプラグインドキュメントを参照してください）:
+## Configuration
 
-```sh
-npm run build
-cp -r dist <opencode-plugins-dir>/herdr-opencode-child-panes
-```
+Configuration is read from environment variables. Invalid values fall back to defaults instead of throwing.
 
-OpenCode は次回のサーバー起動時にプラグインを自動読み込みします。
-
-## 設定
-
-設定はすべて環境変数で行います。不正な値は例外ではなくデフォルトへフォールバックします。
-
-| 変数 | デフォルト | 説明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `HERDR_ENV` | （未設定） | プラグイン起動に必須。Herdr がペイン内に自動設定する。 |
-| `HERDR_PANE_ID` | （未設定） | この OpenCode セッションをホストする呼び出し元ペイン ID。Herdr がペイン内に自動設定する。 |
-| `HERDR_CHILD_PANES` | `true` | マスタースイッチ。`false`（または `0` / `no`）で無効化。 |
-| `HERDR_CHILD_PANES_MAX` | `4` | 同時に管理する子ペインの最大数。 |
-| `HERDR_CHILD_PANES_IDLE_MS` | `10000` | アイドルした子ペインを閉じるまでの猶予期間（ミリ秒）。 |
-| `HERDR_CHILD_PANES_DIRECTION` | `auto` | 互換性のためパースされる設定値。子ペインは常に固定レイアウト（main:右カラム = 2:1、右カラム内は等分割）で生成され、この値は分割方向に影響しない。 |
-| `HERDR_CHILD_PANES_DEBUG` | `false` | `true` でデバッグログを出力。 |
+| `HERDR_ENV` | (unset) | Required. Set by Herdr inside the pane. |
+| `HERDR_PANE_ID` | (unset) | Required. ID of the pane hosting this OpenCode session. Set by Herdr. |
+| `HERDR_CHILD_PANES` | `true` | Master switch. Set to `false`, `0`, or `no` to disable. |
+| `HERDR_CHILD_PANES_MAX` | `4` | Maximum number of child panes managed at once. |
+| `HERDR_CHILD_PANES_IDLE_MS` | `10000` | Grace period in milliseconds before an idle child pane is closed. |
+| `HERDR_CHILD_PANES_DEBUG` | `false` | Set to `true` to enable debug logging. |
 
-## ペインライフサイクルの挙動
+For the complete environment variable reference and fallback behavior, see [docs/configuration.md](docs/configuration.md).
 
-- `session.created`: 親が呼び出し元ペインのルートセッションに解決されるセッションを `waiting_activity` として登録します。この時点ではペインを作りません。
-- 最初の実アクティビティ: `--no-focus` 付きで呼び出し元ペインを右方向へ `2/3` の比率で分割し（main:右カラム = 2:1、メインペインはフォーカスを保持）、新しい右カラムのペイン内で `opencode attach` により子セッションをアタッチします。成功すると `attached` になります。
-- 2つ目以降のchild: 右カラムの最下段ペインを下方向へ `1/2` で分割し、既存の境界を再調整して右カラム内のchild paneを等分の高さにします。`HERDR_CHILD_PANES_DIRECTION`の値はこの固定レイアウトに影響しません。
-- `session.status` の `idle` または `session.idle`: セッションは `idle_pending` に遷移し、猶予期間のクローズタイマーが設定されます。新しいアクティビティはタイマーを取り消して `attached` に戻します。同じペインがアタッチされ続け、2 つ目のペインは作られません。
-- 猶予期間の経過: ペインを閉じ、セッションは `closed` になります。
-- `session.deleted`: （直列化キューを介して）即座にペインを閉じます。
-- クローズ失敗はバックオフ付きで有界リトライされ、リトライを使い切ると `close_failed` を理由に `failed` になります。
+## Documentation
 
-## 容量の挙動
+| Document | Purpose |
+| --- | --- |
+| [README.ja.md](README.ja.md) | Japanese translation of this README. |
+| [docs/getting-started.md](docs/getting-started.md) | Detailed setup, prerequisites, and first-run verification. |
+| [docs/architecture.md](docs/architecture.md) | High-level architecture, module map, and control flow. |
+| [docs/configuration.md](docs/configuration.md) | Complete configuration reference. |
+| [docs/operations.md](docs/operations.md) | Runbook: idle behavior, capacity limits, failures, troubleshooting. |
+| [SPEC.md](SPEC.md) | Normative technical specification (lifecycle, failure semantics, invariants). |
+| [AGENTS.md](AGENTS.md) | Repository-specific instructions for AI agents working in this repo. |
+| `CONTRIBUTING.md` | Development setup, commit conventions, and issue guidelines. |
+| `SECURITY.md` | Supported versions and how to report vulnerabilities. |
+| `CHANGELOG.md` | Release history, maintained by release-please. |
 
-- 同時に管理する子ペインの数は `HERDR_CHILD_PANES_MAX` に制限されます。
-- 上限を超えた生成要求は、セッションを理由 `capacity_limit` の `ignored` に遷移させます。子セッション自体には影響せず、可視化だけがスキップされます。
-- 容量はライブなペインレイアウトから数えるため、外部で閉じられたペインは容量を解放します。閉じた子ペインも新規の子のために容量を解放します。
-- 生成とクローズは内部キューで直列化されるため、並行イベントで上限を超過することはありません。
-
-## 失敗と劣化のセマンティクス
-
-- 分割失敗: セッションは `failed` になります。子セッションは動き続け、失われるのは可視化だけです。
-- アタッチ失敗: 直後に分割したペインを閉じて孤立ペインを残さず、セッションは `failed` になります。
-- Herdr CLI のエラーで OpenCode がクラッシュすることはありません。プラグインは警告をログに出して子タスクに触れません。
-- プラグインが閉じるのは自分が作ったペインだけで、呼び出し元ペイン（`HERDR_PANE_ID`）は決して閉じません。
-- `ignored` / `failed` な親の子は可視化されません。失敗が孤立ペインへ連鎖することはありません。
-
-## セキュリティに関する注意
-
-- `herdr pane run` に送るコマンドはシェル引用されます。イベント由来のセッション ID やディレクトリがシェル構文を注入できません。
-- アタッチのログはサーバー URL を origin までに短縮します。ユーザー名・パスワード・クエリ文字列・フラグメントがログに現れることはありません。
-- `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` は環境からアタッチプロセスへ継承されますが、ログに記録されたり永続化されたりしません。
-- プラグインは `HERDR_PANE_ID` 由来のペインの分割とクローズのみを行い、無関係なペインを検査・クローズしません。
-
-## 現在の制限
-
-- 対応する分割方向は `right` / `down` のみです（Herdr の対応方向）。
-- アイドル猶予タイマーはメモリ上にあります。OpenCode 再起動時は保留タイマーが失われます（アタッチ済みペインは、セッションが削除されるか再びアイドルするまで開いたままです）。
-- `message.part.delta` イベントは防御的に処理しますが、現行 SDK のイベント union には含まれません。
-- 実 Herdr バイナリを使う統合テストは `HERDR_BINARY` 環境変数でゲートされ、未設定時はスキップされます。
-- ネストした子セッションも追跡しますが、可視化の深さは同じ容量上限の対象で、深さ優先の順序は保証されません。
-
-## OMO（oh-my-openagent）との関係
-
-このプラグインは OMO のペイン可視化と同じユースケースを対象にしています: Herdr レイアウト内で複数のエージェントセッションを並行実行すること。OMO が dispatch した子セッションは Herdr ペインとして現れるため、OMO 管理の OpenCode セッションと互換です。ただし **OMO への私的依存はありません**: 公開されている OpenCode プラグインフックと公開 Herdr CLI だけを消費します。実行時に OMO は不要です。
-
-## 開発
+## Development
 
 ```sh
 npm install
@@ -126,6 +101,6 @@ npm run test        # vitest run
 npm run build       # tsup build to dist/
 ```
 
-## ライセンス
+## License
 
-MIT
+[MIT](LICENSE)
