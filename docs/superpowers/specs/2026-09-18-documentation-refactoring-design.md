@@ -225,7 +225,9 @@ English synchronization because it is a snapshot of a manual test run.
   and `docs/superpowers/plans/2026-09-17-github-release-packages.md` files.
   Their content is superseded by `.github/workflows/release.yml` and the
   package metadata in `package.json`.
-- Remove the now-empty `docs/superpowers/` hierarchy after deletion.
+- Retain the non-empty `docs/superpowers/specs/` and `docs/superpowers/plans/`
+  directories after deletion. They contain the active design and implementation
+  plan; do not remove them recursively.
 
 ## Migration Plan
 
