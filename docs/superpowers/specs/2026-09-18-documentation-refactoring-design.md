@@ -67,7 +67,6 @@ repository/
 | Detailed architecture | `docs/architecture.md` | `docs/architecture.ja.md` |
 | Design invariants / state transitions / failure semantics / protocol behavior | `SPEC.md` | None (English only) |
 | Configuration reference | `docs/configuration.md` | `docs/configuration.ja.md` |
-| Deployment / release procedure | `docs/deployment.md` | None (English only) |
 | Operational runbook / limitations / troubleshooting | `docs/operations.md` | `docs/operations.ja.md` |
 | Agent behavior / repo-specific workflows | `AGENTS.md` | None (English only) |
 | Contribution workflow | `CONTRIBUTING.md` | None (minimal repo, English only) |

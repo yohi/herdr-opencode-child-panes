@@ -85,8 +85,8 @@ For the complete environment variable reference and fallback behavior, see [docs
 | [docs/architecture.md](docs/architecture.md) | High-level architecture, module map, and control flow. |
 | [docs/configuration.md](docs/configuration.md) | Complete configuration reference. |
 | [docs/operations.md](docs/operations.md) | Runbook: idle behavior, capacity limits, failures, troubleshooting. |
-| `SPEC.md` | Normative technical specification (lifecycle, failure semantics, invariants). |
-| `AGENTS.md` | Repository-specific instructions for AI agents working in this repo. |
+| [SPEC.md](SPEC.md) | Normative technical specification (lifecycle, failure semantics, invariants). |
+| [AGENTS.md](AGENTS.md) | Repository-specific instructions for AI agents working in this repo. |
 | `CONTRIBUTING.md` | Development setup, commit conventions, and issue guidelines. |
 | `SECURITY.md` | Supported versions and how to report vulnerabilities. |
 | `CHANGELOG.md` | Release history, maintained by release-please. |

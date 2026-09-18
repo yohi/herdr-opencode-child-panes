@@ -12,7 +12,7 @@ The plugin logs lifecycle events and warnings:
 - Idle timer started and cancelled.
 - Pane close and final state (`closed`, `failed`, `ignored`).
 
-When `HERDR_CHILD_PANES_DEBUG` is enabled, additional diagnostic logs include event payloads and Herdr CLI output (with credentials removed).
+When `HERDR_CHILD_PANES_DEBUG` is enabled, additional diagnostic logs include selected session and prerequisite details, lifecycle decisions, idle-timer diagnostics, and an attach command with credentials, URL queries, and fragments redacted. Herdr CLI output is not logged.
 
 ## Idle timeout behavior
 

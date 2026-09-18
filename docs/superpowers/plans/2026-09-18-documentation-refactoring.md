@@ -456,12 +456,12 @@
 
 ---
 
-### Task 10: Remove Superseded `docs/superpowers/` Files and Final Review
+### Task 10: Verify Superseded `docs/superpowers/` Files and Final Review
 
 **Files:**
-- Delete: `docs/superpowers/specs/2026-09-17-github-release-packages-design.md`
-- Delete: `docs/superpowers/plans/2026-09-17-github-release-packages.md`
-- Delete: empty `docs/superpowers/specs/` and `docs/superpowers/plans/` directories if empty
+- Verify absent: `docs/superpowers/specs/2026-09-17-github-release-packages-design.md`
+- Verify absent: `docs/superpowers/plans/2026-09-17-github-release-packages.md`
+- Keep the non-empty `docs/superpowers/specs/` and `docs/superpowers/plans/` directories, which contain the current design and plan.
 - Keep: `docs/superpowers/specs/2026-09-18-documentation-refactoring-design.md`
 
 **Interfaces:**
@@ -474,20 +474,29 @@
   contain the implemented GitHub Packages release logic. No information from
   the old design/plan files needs to be preserved.
 
-- [ ] **Step 2: Remove old files**
+- [ ] **Step 2: Verify old files remain deleted**
 
-  Run:
-
-  ```bash
-  git rm docs/superpowers/specs/2026-09-17-github-release-packages-design.md
-  git rm docs/superpowers/plans/2026-09-17-github-release-packages.md
-  ```
-
-  Then remove empty directories:
+  The old files were deleted before this plan is executed. Do not run `git rm`
+  again. Verify that neither path exists in `HEAD`, the Git index, or the
+  working tree:
 
   ```bash
-  rmdir docs/superpowers/specs docs/superpowers/plans 2>/dev/null || true
+  old_files=(
+    docs/superpowers/specs/2026-09-17-github-release-packages-design.md
+    docs/superpowers/plans/2026-09-17-github-release-packages.md
+  )
+  for file in "${old_files[@]}"; do
+    if git cat-file -e "HEAD:${file}" 2>/dev/null \
+      || git ls-files --error-unmatch -- "$file" >/dev/null 2>&1 \
+      || test -e "$file"; then
+      printf 'Superseded file is still present: %s\n' "$file" >&2
+      exit 1
+    fi
+  done
   ```
+
+  Expected: the loop exits with status 0, confirming that both old paths are
+  absent from `HEAD`, the index, and the working tree.
 
 - [ ] **Step 3: Final verification**
 
@@ -508,14 +517,118 @@
 
 - [ ] **Step 4: Review all internal links**
 
-  Run a link check. Because there is no dedicated link checker in the project,
-  do a grep-based sanity check:
+  Run the following link-check script. It extracts Markdown inline and
+  reference-style links, resolves every relative target from the directory of
+  its source document, and fails if a target is missing, is not a file, or
+  resolves outside the repository. Planning artifacts under
+  `docs/superpowers/` are excluded because they contain illustrative snippets,
+  not user-facing document links, and fenced code blocks are ignored.
 
   ```bash
-  grep -R '\[.*\](.*\.md)' README.md README.ja.md docs/ AGENTS.md CONTRIBUTING.md SECURITY.md SPEC.md
+  node <<'NODE'
+  const fs = require("node:fs");
+  const path = require("node:path");
+
+  const root = process.cwd();
+  const entries = [
+    "README.md",
+    "README.ja.md",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SPEC.md",
+    "docs",
+  ];
+  const markdownFiles = [];
+
+  function collectMarkdownFiles(entry) {
+    const absolute = path.resolve(root, entry);
+    const relativeEntry = path.relative(root, absolute);
+    const planningRoot = path.join("docs", "superpowers");
+    if (relativeEntry === planningRoot || relativeEntry.startsWith(`${planningRoot}${path.sep}`)) {
+      return;
+    }
+    const stats = fs.statSync(absolute);
+    if (stats.isDirectory()) {
+      for (const child of fs.readdirSync(absolute)) {
+        collectMarkdownFiles(path.join(entry, child));
+      }
+      return;
+    }
+    if (absolute.endsWith(".md")) {
+      markdownFiles.push(absolute);
+    }
+  }
+
+  for (const entry of entries) {
+    collectMarkdownFiles(entry);
+  }
+
+  function withoutFencedCodeBlocks(text) {
+    let fenced = false;
+    return text
+      .split("\n")
+      .map((line) => {
+        if (/^\s{0,3}(`{3,}|~{3,})/.test(line)) {
+          fenced = !fenced;
+          return "";
+        }
+        return fenced ? "" : line;
+      })
+      .join("\n");
+  }
+
+  const linkPatterns = [
+    /!?\[[^\]]*\]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^)]*["'])?\s*\)/g,
+    /^\s*\[[^\]]+\]:\s*(<[^>]+>|[^\s]+)\s*$/gm,
+  ];
+  const failures = [];
+
+  for (const source of markdownFiles) {
+    const text = withoutFencedCodeBlocks(fs.readFileSync(source, "utf8"));
+    for (const pattern of linkPatterns) {
+      for (const match of text.matchAll(pattern)) {
+        const rawTarget = match[1].replace(/^<|>$/g, "");
+        if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(rawTarget)) {
+          continue;
+        }
+        const target = rawTarget.split(/[?#]/, 1)[0];
+        if (target.length === 0) {
+          continue;
+        }
+
+        const resolved = path.resolve(path.dirname(source), target);
+        if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+          failures.push(`${path.relative(root, source)}: ${rawTarget} resolves outside the repository`);
+          continue;
+        }
+
+        let isFile = false;
+        try {
+          isFile = fs.statSync(resolved).isFile();
+        } catch {
+          // The failure below reports missing targets uniformly.
+        }
+        if (!isFile) {
+          failures.push(`${path.relative(root, source)}: missing file for ${rawTarget}`);
+        }
+      }
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error(failures.join("\n"));
+    process.exit(1);
+  }
+  console.log(`Checked ${markdownFiles.length} Markdown files and all relative links.`);
+  NODE
   ```
 
-  Expected: every linked `.md` file exists in the target path.
+  Expected: the script exits with status 0 and every relative link resolves to
+  an existing file based on its source document's directory. External URLs and
+  fragment-only links are skipped. A grep-based command, if retained as a
+  separate check, is only a syntax-extraction aid and is not the existence
+  validation gate.
 
 ---
 
