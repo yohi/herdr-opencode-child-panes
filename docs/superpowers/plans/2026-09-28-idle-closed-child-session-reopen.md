@@ -449,16 +449,21 @@ Add a retry/backoff test equivalent to:
 
 ```ts
 it("uses the final reopen demand after an idle close retry", async () => {
+  const demandSeenBySuccessfulRetry: boolean[] = [];
   // First closePane attempt returns false, entering retry backoff.
   // During backoff: work -> true, idle -> false, work -> true.
-  // Advance the retry timer; second closePane attempt succeeds.
+  // The second closePane mock records the registry demand immediately before returning true.
+  demandSeenBySuccessfulRetry.push(
+    fixture.registry.get(CHILD_ID)?.reopenRequested ?? false,
+  );
+
   expect(fixture.closePane).toHaveBeenCalledTimes(2);
+  expect(demandSeenBySuccessfulRetry).toEqual([true]);
   expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
-  expect(finalizeReopenSnapshot).toBe(true); // observed through Task 4's handoff seam
 });
 ```
 
-The test must also cover the inverse final value (work -> idle before the successful retry) and assert no immediate reopen demand remains.
+Add the inverse retry case (work -> idle before the successful retry) and assert the successful retry observes `reopenRequested=false`. Task 5's work-idle-work handoff test then proves that a final true value produces exactly one reopen after the close task settles.
 
 Add focused logger assertions for these Design §15 decisions:
 
@@ -623,11 +628,11 @@ it("fails a claimed reopen cleanly when queue disposal rejects the successor enq
 });
 
 it("reopens using the current live layout rather than the closed pane location", async () => {
-  // Initial visible children: A -> pane-2, B -> pane-3.
-  // Idle-close A so pane-2 is removed from childPaneIds.
-  // Reopen A -> pane-4.
+  // Initial visible children: A -> pane-2, B -> pane-3, C -> pane-4.
+  // Idle-close A so pane-2 is removed; live childPaneIds are [pane-3, pane-4].
+  // Reopen A -> pane-5 using the existing third-visible-child policy.
   expect(fixture.splitPane).toHaveBeenLastCalledWith({
-    paneId: "pane-3",
+    paneId: "pane-4",
     direction: "down",
     ratio: 0.5,
     noFocus: true,
@@ -635,10 +640,15 @@ it("reopens using the current live layout rather than the closed pane location",
   expect(fixture.splitPane).not.toHaveBeenLastCalledWith(
     expect.objectContaining({ paneId: "pane-2" }),
   );
+  expect(fixture.resizePane).toHaveBeenCalledWith({
+    paneId: "pane-4",
+    direction: "up",
+    amount: 1 / 6,
+  });
 });
 ```
 
-The layout test must use the existing split/rebalance policy and prove the removed old pane ID is not reused as a split target. If the chosen visible-child count triggers an existing resize/rebalance rule, assert that rule as well.
+The layout test must prove both that the removed old pane ID is not reused and that split/rebalance is calculated from the current live `childPaneIds`.
 
 Do **not** construct an "immediate post-close reopen at full capacity" normal-lifecycle test. A successful close removes this session's pane before the synchronous capacity check, so that handoff necessarily frees one slot. Reachable full-capacity reopen behavior remains owned by Task 3.
 
@@ -820,7 +830,7 @@ Update `handleSessionCreated()`:
 - after validating a parent candidate and before awaiting ownership, add to `ownershipPending`;
 - after ownership resolves, check `deletedBeforeRegistration` before registration or pending-work replay;
 - always remove the ownership-pending marker when the ownership attempt completes;
-- when tombstoned, delete pending work, do not register, and emit the semantic info log "pre-registration deletion prevented registration after ownership resolution" with `sessionId`.
+- when tombstoned, delete pending work, do not register, and emit `logger.info("Pre-registration deletion prevented child registration", { sessionId })` after ownership resolution.
 
 Update missing-session work handling:
 
