@@ -483,7 +483,7 @@ The helper must:
 
 Task 4 stops at returning that snapshot; Task 5 owns acting on `true`.
 
-Use this finalizer from successful idle/delete close paths, including no-managed-pane finalization where applicable.
+Use this finalizer from successful idle/delete close paths, including no-managed-pane finalization. In particular, replace the queued-spawn guard that currently performs a raw `closing + no pane -> closed` transition with `finalizeSuccessfulClose(sessionId)` so deletion-before-mutation also clears close metadata.
 
 - [ ] **Step 4: Run idle/closing and full orchestrator tests and confirm GREEN for this slice**
 
@@ -1020,6 +1020,25 @@ If verification changes no tracked source/document file, create no additional co
 | duplicate create/work cannot resurrect tombstoned ID | Task 6 |
 | canonical + architecture + operations + user docs synchronization | Task 7 |
 | full AC-1–AC-14 / FR / NFR regression evidence | Task 8 |
+
+## Issue #41 Acceptance Traceability
+
+| Acceptance criterion | Owning task / proof |
+| --- | --- |
+| AC-1 idle timeout then active -> new pane | Tasks 4–5: idle close reaches `reopenable`; active latch/handoff test |
+| AC-2 idle timeout then meaningful activity -> new pane | Tasks 2 and 5: meaningful reopen routing + closing meaningful handoff test |
+| AC-3 active + message burst -> one pane | Tasks 2 and 5: synchronous `reopenable -> spawning` claim / exactly-once handoff |
+| AC-4 reopened attach uses same child session ID | Task 2 same-session attach assertion; Task 5 repeated-cycle assertion |
+| AC-5 grace-period resume keeps old pane | Task 2 preserves existing `idle_pending + active_status` test |
+| AC-6 work after close starts reopens only after old close | Task 5 real-queue ordering test `close` before `split` |
+| AC-7 close failure -> no reopen | Task 4 failure metadata cleanup + existing close-failure regression; Task 5 never handoffs on false finalizer |
+| AC-8 reopen at maxPanes -> no pane / no overflow | Task 3 reopen-capacity RED/GREEN test |
+| AC-9 later work retries capacity-blocked reopen | Task 3 later-signal retry; Task 5 immediate-handoff-full-capacity retry |
+| AC-10 initial capacity semantics unchanged | Task 3 existing `ignored(capacity_limit)` regression |
+| AC-11 repeated idle close / reopen | Task 5 two-cycle test |
+| AC-12 deleted session never reopens | Tasks 4–6: delete precedence, reopen-spawn deletion, pre-registration tombstone |
+| AC-13 existing split/rebalance policy reused | Task 2 uses existing `runSpawn`; Task 5 repeated-cycle/layout regressions; no layout algorithm change |
+| AC-14 all existing + new tests pass | Task 8 complete `npm test`, typecheck, lint, build |
 
 ## Plan -> Design Traceability
 
