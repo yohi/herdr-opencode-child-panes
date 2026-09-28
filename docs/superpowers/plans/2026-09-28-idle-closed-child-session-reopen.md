@@ -283,6 +283,7 @@ git commit -m "feat: route reopen work signals by lifecycle state"
   - `reserveSpawn(sessionId: string, kind: SpawnKind): boolean`
   - Initial full-capacity behavior: `ignored(capacity_limit)`.
   - Reopen full-capacity behavior: remain `reopenable`, no failure reason, no reservation, no queue task.
+  - Test fixture exposes `info`, `warn`, and existing `debug` logger mocks for lifecycle observability assertions.
 
 - [ ] **Step 1: Write failing reopen-capacity tests**
 
@@ -316,6 +317,22 @@ it("retries a capacity-blocked reopen on a later work signal", async () => {
 });
 ```
 
+Add a repeated-signal test while capacity stays full:
+
+```ts
+it("does not split for repeated reopen work while capacity remains full", async () => {
+  // Stage CHILD_ID as reopenable and another attached child as the only capacity consumer.
+  await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+  await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+  await fixture.orchestrator.handleEvent(deltaActivityEvent(CHILD_ID));
+
+  expect(fixture.splitPane).not.toHaveBeenCalled();
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+});
+```
+
+Extend `Fixture` / `createFixture()` to expose `info` and `warn` mocks, then assert the first capacity-blocked reopen emits the semantic "reopen deferred because capacity was full" warning with `sessionId`; repeated blocked signals may log the same decision again, but must never split or set a failure reason.
+
 Keep the existing initial-capacity tests asserting `ignored` + `capacity_limit`.
 
 - [ ] **Step 2: Run capacity tests and confirm RED**
@@ -339,7 +356,7 @@ function reserveSpawn(sessionId: string, kind: SpawnKind): boolean
 When full:
 
 - `kind === "initial"`: preserve existing `failureReason="capacity_limit"`, transition to `ignored`, and existing warning;
-- `kind === "reopen"`: return `false` without state mutation or failure reason; log reopen deferral.
+- `kind === "reopen"`: return `false` without state mutation or failure reason; emit a semantic warning that reopen was deferred because capacity was full.
 
 Only add `spawnReservations` after the capacity check succeeds.
 
@@ -428,6 +445,30 @@ it("promotes an idle close to permanent deletion", async () => {
 
 Add a race test where work/idle/delete arrive while the `closePane()` promise is unresolved, so close success must reread current metadata rather than use a stale pre-await session object.
 
+Add a retry/backoff test equivalent to:
+
+```ts
+it("uses the final reopen demand after an idle close retry", async () => {
+  // First closePane attempt returns false, entering retry backoff.
+  // During backoff: work -> true, idle -> false, work -> true.
+  // Advance the retry timer; second closePane attempt succeeds.
+  expect(fixture.closePane).toHaveBeenCalledTimes(2);
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+  expect(finalizeReopenSnapshot).toBe(true); // observed through Task 4's handoff seam
+});
+```
+
+The test must also cover the inverse final value (work -> idle before the successful retry) and assert no immediate reopen demand remains.
+
+Add focused logger assertions for these Design §15 decisions:
+
+- work received during `closing(idle)` emits "work requested reopen while idle close was in progress";
+- later idle that changes `reopenRequested=true -> false` emits "later idle cancelled pending reopen";
+- `session.deleted` that changes a pending reopen to permanent deletion emits "pending reopen cancelled because session.deleted arrived";
+- successful idle close emits "idle-closed child became reopenable".
+
+Assertions may use message + `sessionId` rather than freezing every metadata field.
+
 - [ ] **Step 2: Run idle/closing tests and confirm RED**
 
 Run:
@@ -449,13 +490,13 @@ In `closeAfterIdleGrace()`:
 
 In `handleWorkSignal()`:
 
-- when current state is `closing` and `closeReason==="idle"`, set `reopenRequested=true`;
+- when current state is `closing` and `closeReason==="idle"`, set `reopenRequested=true`; when this changes the demand from false to true, emit the semantic debug log "work requested reopen while idle close was in progress";
 - when `closeReason==="deleted"`, ignore.
 
 In `handleSessionIdle()`:
 
 - preserve current `spawning` and `attached` behavior;
-- when `closing(idle)`, set `reopenRequested=false`;
+- when `closing(idle)`, set `reopenRequested=false`; when this cancels a true demand, emit the semantic debug log "later idle cancelled pending reopen";
 - when `closing(deleted)`, ignore.
 
 Update `fail(sessionId, reason)` to call `registry.clearCloseMetadata(sessionId)` before finalizing `failed`, so close failure, queue/spawn failure, split failure, and attach failure cannot leave stale `closeReason` or `reopenRequested` metadata.
@@ -463,7 +504,7 @@ Update `fail(sessionId, reason)` to call `registry.clearCloseMetadata(sessionId)
 In `handleSessionDeleted()`:
 
 - clear idle timer and `idleDuringSpawn` as today;
-- if already `closing(idle)`, promote metadata to `deleted`, clear reopen demand, and let the existing close task continue;
+- if already `closing(idle)`, promote metadata to `deleted`, clear reopen demand, and let the existing close task continue; when a true reopen demand is cancelled, emit the semantic debug/info log "pending reopen cancelled because session.deleted arrived";
 - if already `closing(deleted)` or terminal, no-op;
 - otherwise set delete intent and transition to `closing` before the existing immediate close/no-pane path.
 
@@ -481,7 +522,7 @@ The helper must:
 2. remove `childPaneId` from `childPaneIds` when supplied;
 3. call `clearPaneId(sessionId)`;
 4. if current `closeReason==="deleted"`: transition to `closed`, clear close metadata, return `false`;
-5. if current `closeReason==="idle"`: snapshot `reopenRequested`, transition to `reopenable`, clear close metadata, return the snapshot.
+5. if current `closeReason==="idle"`: snapshot `reopenRequested`, transition to `reopenable`, clear close metadata, emit the semantic info log "idle-closed child became reopenable", and return the snapshot.
 
 Task 4 stops at returning that snapshot; Task 5 owns acting on `true`.
 
@@ -561,7 +602,7 @@ it("does not immediately reopen when the final closing signal is idle", async ()
 });
 ```
 
-- [ ] **Step 2: Add failing queue-disposal and full-capacity handoff tests**
+- [ ] **Step 2: Add failing queue-disposal and reopen-layout tests**
 
 Add:
 
@@ -581,17 +622,25 @@ it("fails a claimed reopen cleanly when queue disposal rejects the successor enq
   expect(reopenSplitCount).toBe(0);
 });
 
-it("leaves the child reopenable when immediate post-close reopen has no capacity", async () => {
-  // Arrange another registered attached pane before close resolves so capacity is full.
-  releaseClose(true);
-
-  await vi.waitFor(() => expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable"));
-  expect(fixture.registry.get(CHILD_ID)?.failureReason).toBeUndefined();
-  expect(reopenSplitCount).toBe(0);
+it("reopens using the current live layout rather than the closed pane location", async () => {
+  // Initial visible children: A -> pane-2, B -> pane-3.
+  // Idle-close A so pane-2 is removed from childPaneIds.
+  // Reopen A -> pane-4.
+  expect(fixture.splitPane).toHaveBeenLastCalledWith({
+    paneId: "pane-3",
+    direction: "down",
+    ratio: 0.5,
+    noFocus: true,
+  });
+  expect(fixture.splitPane).not.toHaveBeenLastCalledWith(
+    expect.objectContaining({ paneId: "pane-2" }),
+  );
 });
 ```
 
-The full-capacity test must then free capacity and send a later work signal, asserting that the child successfully reopens.
+The layout test must use the existing split/rebalance policy and prove the removed old pane ID is not reused as a split target. If the chosen visible-child count triggers an existing resize/rebalance rule, assert that rule as well.
+
+Do **not** construct an "immediate post-close reopen at full capacity" normal-lifecycle test. A successful close removes this session's pane before the synchronous capacity check, so that handoff necessarily frees one slot. Reachable full-capacity reopen behavior remains owned by Task 3.
 
 - [ ] **Step 3: Add failing deletion-during-reopen-spawn and repeated-cycle tests**
 
@@ -652,9 +701,15 @@ Rely on `enqueueSpawn()` to:
 
 Verify the rejection chain is attached inside `enqueueSpawn()` before it returns so `void enqueueSpawn(...)` cannot create an unhandled rejection.
 
+Track whether the queued spawn callback ever starts. For `kind === "reopen"`, if the queue rejects before task start (the dispose/unavailable path), emit the semantic warning/error "reopen enqueue failed because the serialized queue was unavailable" with `sessionId`, then preserve the existing `failed(spawn_failed)` ownership.
+
+Thread `SpawnKind` into the successful attach logging seam (for example `runSpawn(sessionId, kind)`). When `kind === "reopen"` reaches `attached`, emit the semantic info log "child reopened and attached". Keep the existing generic attach log if desired; the reopen-specific semantic decision must be observable.
+
 Do not change `src/async-queue.ts`.
 
 For deletion during reopen spawn, preserve the existing state re-checks around split/attach; update successful cleanup to clear pane ownership/close metadata and end in terminal `closed` under delete intent.
+
+Add logger assertions to the Step 2 queue-disposal test for the queue-unavailable semantic log and to the successful handoff/reopen test for the "child reopened and attached" semantic log.
 
 - [ ] **Step 6: Run Task 5 tests and confirm GREEN**
 
@@ -712,6 +767,10 @@ it("does not resurrect a child deleted while ownership resolution is pending", a
   expect(fixture.registry.has(CHILD_ID)).toBe(false);
   expect(fixture.splitPane).not.toHaveBeenCalled();
   expect(fixture.attach).not.toHaveBeenCalled();
+  expect(fixture.info).toHaveBeenCalledWith(
+    "Pre-registration deletion prevented child registration",
+    expect.objectContaining({ sessionId: CHILD_ID }),
+  );
 });
 ```
 
@@ -761,7 +820,7 @@ Update `handleSessionCreated()`:
 - after validating a parent candidate and before awaiting ownership, add to `ownershipPending`;
 - after ownership resolves, check `deletedBeforeRegistration` before registration or pending-work replay;
 - always remove the ownership-pending marker when the ownership attempt completes;
-- when tombstoned, delete pending work and do not register.
+- when tombstoned, delete pending work, do not register, and emit the semantic info log "pre-registration deletion prevented registration after ownership resolution" with `sessionId`.
 
 Update missing-session work handling:
 
@@ -855,7 +914,7 @@ In `docs/operations.md`:
 - state that meaningful message activity preserves the existing scheduled close during `idle_pending`;
 - describe later work after successful idle close reopening the pane;
 - distinguish initial capacity rejection from transient reopen capacity pressure;
-- add expected logs for reopen deferral/reopen/delete suppression.
+- document the implemented semantic logs for reopenability, reopen request/cancellation, reopen success/deferral, deletion suppression, tombstone suppression, and queue-unavailable failure.
 
 - [ ] **Step 4: Update README English canonical text and Japanese translation**
 
@@ -992,7 +1051,11 @@ Expected: PASS. This focused run must include coverage for:
 - repeated cycles;
 - deletion during reopen spawn;
 - non-awaiting queue handoff and queue rejection;
-- pre-registration deletion tombstone.
+- pre-registration deletion tombstone;
+- semantic lifecycle logs from Design §15;
+- reopen layout uses current live `childPaneIds` and not the removed old pane;
+- close retry/backoff allows work/idle demand changes and uses the final value;
+- repeated work while reopen capacity remains full never splits.
 
 - [ ] **Step 7: Do not commit verification-only output**
 
@@ -1009,7 +1072,7 @@ If verification changes no tracked source/document file, create no additional co
 | active/message dispatcher with preserved `spawning` and `idle_pending` compatibility (HERDR41-RG-003) | Task 2 |
 | `SpawnKind` with `initial` / `reopen` modes | Task 2 |
 | initial capacity -> `ignored(capacity_limit)` | Task 3 |
-| reopen capacity -> remain `reopenable` | Task 3 and immediate-handoff case in Task 5 |
+| reopen capacity -> remain `reopenable` | Task 3 reachable full-capacity/later-retry cases; defensive check remains shared by Task 5 handoff |
 | idle close -> `reopenable` | Task 4 |
 | work/idle last-signal-wins during `closing(idle)` (HERDR41-RG-002) | Task 4 |
 | `session.deleted` overrides pending reopen | Task 4 |
@@ -1018,6 +1081,10 @@ If verification changes no tracked source/document file, create no additional co
 | queue disposal/rejection -> release reservation + `failed(spawn_failed)` | Task 5 |
 | deletion during reopen spawn | Task 5 |
 | repeated idle-close/reopen cycles | Task 5 |
+| Design §15 semantic observability (HERDR41-RG-005) | Task 3 capacity deferral; Task 4 close/reopen demand decisions; Task 5 reopen success/queue unavailable; Task 6 tombstone suppression |
+| reopen uses current layout / old pane not reused (HERDR41-RG-005) | Task 5 |
+| close retry/backoff while reopen demand changes (HERDR41-RG-005) | Task 4 |
+| repeated work while reopen capacity remains full (HERDR41-RG-005) | Task 3 |
 | ownership-pending deletion tombstone (HERDR41-RG-004) | Task 6 |
 | duplicate create/work cannot resurrect tombstoned ID | Task 6 |
 | canonical + architecture + operations + user docs synchronization | Task 7 |
@@ -1035,11 +1102,11 @@ If verification changes no tracked source/document file, create no additional co
 | AC-6 work after close starts reopens only after old close | Task 5 real-queue ordering test `close` before `split` |
 | AC-7 close failure -> no reopen | Task 4 failure metadata cleanup + existing close-failure regression; Task 5 never handoffs on false finalizer |
 | AC-8 reopen at maxPanes -> no pane / no overflow | Task 3 reopen-capacity RED/GREEN test |
-| AC-9 later work retries capacity-blocked reopen | Task 3 later-signal retry; Task 5 immediate-handoff-full-capacity retry |
+| AC-9 later work retries capacity-blocked reopen | Task 3 reachable later-signal retry after capacity is freed |
 | AC-10 initial capacity semantics unchanged | Task 3 existing `ignored(capacity_limit)` regression |
 | AC-11 repeated idle close / reopen | Task 5 two-cycle test |
 | AC-12 deleted session never reopens | Tasks 4–6: delete precedence, reopen-spawn deletion, pre-registration tombstone |
-| AC-13 existing split/rebalance policy reused | Task 2 uses existing `runSpawn`; Task 5 repeated-cycle/layout regressions; no layout algorithm change |
+| AC-13 existing split/rebalance policy reused | Task 5 explicit current-live-layout test proves the removed old pane is not reused and existing split/rebalance policy selects the target |
 | AC-14 all existing + new tests pass | Task 8 complete `npm test`, typecheck, lint, build |
 
 ## Plan -> Design Traceability
@@ -1054,6 +1121,36 @@ If verification changes no tracked source/document file, create no additional co
 | Task 6 | §8.2, §13.3, §16.7, invariants 4–5, HERDR41-RG-004 |
 | Task 7 | §17 and §20 documentation/compatibility boundary |
 | Task 8 | §18 acceptance mapping, §19 invariants, AC-14 |
+
+## Review Gate Finding Resolution
+
+### HERDR41-RG-001
+
+RESOLVED maintained: Task 5 keeps the same-queue close -> reopen handoff non-awaiting.
+
+### HERDR41-RG-002
+
+RESOLVED maintained: Task 4/5 preserve work/idle last-signal-wins and delete precedence.
+
+### HERDR41-RG-003
+
+RESOLVED maintained: Task 2 preserves active-status versus meaningful-activity behavior in `spawning` and `idle_pending`.
+
+### HERDR41-RG-004
+
+RESOLVED maintained: Task 6 preserves ownership-pending deletion tombstones through orchestrator disposal.
+
+### HERDR41-RG-005
+
+Resolved by assigning all Design §15 semantic logs to Tasks 3–6 and by adding explicit RED/GREEN coverage for current-layout reopen, retry/backoff demand changes, and repeated work while capacity remains full. Task 8 verifies those concrete tests rather than claiming uncovered Design contracts.
+
+### HERDR41-RG-006
+
+Resolved by removing the unreachable normal-lifecycle "immediate post-close capacity full" Task 5 scenario. Task 3 tests the reachable capacity-full reopen path after the session is already `reopenable`; the shared defensive `SpawnKind="reopen"` check remains in production code.
+
+### HERDR41-RG-007
+
+Resolved by the Design §22 update: the Implementation Plan already exists, and implementation waits for this combined Design + Plan Review Gate to return READY.
 
 ## Commit Sequence
 
