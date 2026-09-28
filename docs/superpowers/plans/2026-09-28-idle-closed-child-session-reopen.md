@@ -458,6 +458,8 @@ In `handleSessionIdle()`:
 - when `closing(idle)`, set `reopenRequested=false`;
 - when `closing(deleted)`, ignore.
 
+Update `fail(sessionId, reason)` to call `registry.clearCloseMetadata(sessionId)` before finalizing `failed`, so close failure, queue/spawn failure, split failure, and attach failure cannot leave stale `closeReason` or `reopenRequested` metadata.
+
 In `handleSessionDeleted()`:
 
 - clear idle timer and `idleDuringSpawn` as today;
