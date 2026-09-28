@@ -1004,12 +1004,12 @@ If verification changes no tracked source/document file, create no additional co
 | --- | --- |
 | `reopenable` state, terminal states, close metadata | Task 1 |
 | explicit `paneId` clearing API | Task 1; used by Task 4 |
-| active/message dispatcher with preserved `spawning` and `idle_pending` compatibility | Task 2 |
+| active/message dispatcher with preserved `spawning` and `idle_pending` compatibility (HERDR41-RG-003) | Task 2 |
 | `SpawnKind` with `initial` / `reopen` modes | Task 2 |
 | initial capacity -> `ignored(capacity_limit)` | Task 3 |
 | reopen capacity -> remain `reopenable` | Task 3 and immediate-handoff case in Task 5 |
 | idle close -> `reopenable` | Task 4 |
-| work/idle last-signal-wins during `closing(idle)` | Task 4 |
+| work/idle last-signal-wins during `closing(idle)` (HERDR41-RG-002) | Task 4 |
 | `session.deleted` overrides pending reopen | Task 4 |
 | reread metadata after async close succeeds | Task 4 |
 | same-queue non-awaiting close -> reopen handoff (HERDR41-RG-001) | Task 5 |
