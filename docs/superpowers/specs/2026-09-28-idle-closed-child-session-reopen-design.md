@@ -3,7 +3,7 @@
 **Issue:** #41  
 **Repository:** `yohi/herdr-opencode-child-panes`  
 **Base:** `master@31a2c4da7c741622c5874e4a624c81f2c36b7122`  
-**Status:** Superpowers Review Gate fixes HERDR41-RG-001 through HERDR41-RG-004 applied; implementation not started
+**Status:** Superpowers Review Gate fixes HERDR41-RG-001 through HERDR41-RG-007 applied; implementation not started
 
 ## 1. Purpose
 
@@ -434,7 +434,7 @@ the spawn path:
 
 The work signal has been consumed. A later work signal retries when capacity is available.
 
-When an immediate reopen demand is handed off from successful idle close and capacity is already full, the same rule applies: the session remains `reopenable` and no queue task is created.
+The same `SpawnKind="reopen"` capacity check remains a defensive guard for every reopen entry point. However, a successful idle-close handoff is **not** a required full-capacity integration scenario: under the normal lifecycle, the closing session's old managed pane is removed and its `paneId` is cleared before the synchronous reopen capacity check, so that handoff necessarily frees one managed-pane slot. Full-capacity reopen behavior is therefore verified through the reachable `reopenable -> later work` path after other children have filled capacity.
 
 ## 11. Layout semantics
 
@@ -763,7 +763,8 @@ Cover:
 - no failure reason is recorded for reopen capacity shortage;
 - a later work signal after capacity is freed successfully reopens;
 - repeated signals while capacity remains full do not split;
-- an immediate post-close reopen demand at full capacity ends in `reopenable` without enqueueing;
+- after an idle close has reached `reopenable`, other children may fill capacity; a later work signal then leaves the session `reopenable`, and another later work signal succeeds after capacity is freed;
+- the defensive reopen-capacity branch remains common to all reopen entry points, but no normal-lifecycle test fabricates an impossible full-capacity state inside the synchronous successful-close handoff;
 - initial capacity behavior remains `ignored(capacity_limit)`;
 - concurrent spawn reservations still cannot exceed `maxPanes`.
 
@@ -918,12 +919,24 @@ Resolved by §8.2, §13.3, §16.7, and invariant 4–5:
 - ownership completion checks deletion before registration/replay;
 - tombstones live until orchestrator disposal.
 
+### HERDR41-RG-005
+
+Resolved by preserving §15 as an implementation contract and requiring the Implementation Plan to assign every reopen semantic log to an owning production-code task with focused observability assertions. The Plan also carries explicit RED/GREEN coverage for reopen layout, retry/backoff demand changes, and repeated work while reopen capacity remains full.
+
+### HERDR41-RG-006
+
+Resolved by §10.2 and §16.6: the normal successful idle-close handoff frees the closing session's pane before the synchronous reopen capacity check, so an "immediate post-close capacity full" state is not treated as a reachable acceptance scenario. Retryable reopen-capacity semantics remain required and are tested through the reachable `reopenable -> later work while capacity is full -> later retry after capacity frees` path.
+
+### HERDR41-RG-007
+
+Resolved by §22: the Implementation Plan already exists, and the next gate is the combined Design + Plan pre-implementation Review Gate. Source implementation begins only after that gate is READY.
+
 ## 22. Implementation boundary
 
 This document defines the complete behavior, state ownership, interfaces, error handling, serialization contract, compatibility boundary, and test obligations for Issue #41.
 
 It does not authorize source-code implementation.
 
-The next step after a successful Superpowers Review Gate is to create a separate Superpowers Implementation Plan whose terminology, types, interfaces, failure semantics, queue handoff, and tests match this design exactly.
+The Implementation Plan already exists at `docs/superpowers/plans/2026-09-28-idle-closed-child-session-reopen.md`. The current pre-implementation gate reviews this Design and that Plan together for bidirectional agreement in terminology, types/interfaces, state transitions, error handling, queue ownership, tests, observability, compatibility, and non-functional requirements.
 
-Source code, tests, configuration, `SPEC.md`, and architecture documentation must not be modified before that planning gate is completed.
+Source code, tests, configuration, `SPEC.md`, architecture/operations documentation, and README files must not be modified until the combined Design + Plan Superpowers Review Gate returns READY. After that READY result, implementation may begin at Implementation Plan Task 1.
