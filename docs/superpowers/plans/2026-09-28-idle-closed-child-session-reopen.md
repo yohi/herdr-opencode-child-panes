@@ -243,7 +243,7 @@ In `src/pane-orchestrator.ts`:
   - `attached`: no-op;
   - `idle_pending + active_status`: existing timer cancel + `attached`;
   - `idle_pending + meaningful_activity`: no-op;
-  - `closing(idle)`: Task 4 will set reopen demand; until then route to the metadata branch introduced there;
+  - `closing`: preserve the current no-op work behavior in this incremental task; Task 4 replaces this row with the approved idle/delete-intent handling;
   - `closing(deleted)`: ignore;
   - `reopenable`: `enqueueSpawn(session, "reopen")`;
   - terminal states: ignore.
