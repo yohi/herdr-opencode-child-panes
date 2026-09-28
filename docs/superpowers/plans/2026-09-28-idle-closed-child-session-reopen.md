@@ -111,7 +111,7 @@ it("lists reopenable as non-terminal but keeps closed terminal", () => {
 });
 ```
 
-Also extend the illegal-transition coverage to assert `closed -> spawning` remains rejected.
+Also update the existing exact registered-session object assertion to include `reopenRequested: false`, and extend the illegal-transition coverage to assert `closed -> spawning` remains rejected.
 
 - [ ] **Step 2: Run the registry tests and confirm RED**
 
@@ -1005,7 +1005,7 @@ If verification changes no tracked source/document file, create no additional co
 | `reopenable` state, terminal states, close metadata | Task 1 |
 | explicit `paneId` clearing API | Task 1; used by Task 4 |
 | active/message dispatcher with preserved `spawning` and `idle_pending` compatibility | Task 2 |
-| `SpawnKind = "initial" | "reopen"` | Task 2 |
+| `SpawnKind` with `initial` / `reopen` modes | Task 2 |
 | initial capacity -> `ignored(capacity_limit)` | Task 3 |
 | reopen capacity -> remain `reopenable` | Task 3 and immediate-handoff case in Task 5 |
 | idle close -> `reopenable` | Task 4 |
