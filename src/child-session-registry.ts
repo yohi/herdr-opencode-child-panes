@@ -1,6 +1,7 @@
 import {
   CHILD_SESSION_TRANSITIONS,
   type ChildSession,
+  type ChildSessionCloseReason,
   type ChildSessionRegistry,
   type ChildSessionState,
   type CreateChildSessionRegistryOptions,
@@ -39,6 +40,7 @@ export function createChildSessionRegistry(
         sessionId,
         parentId,
         state: "waiting_activity",
+        reopenRequested: false,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -68,6 +70,22 @@ export function createChildSessionRegistry(
 
     setPaneId(sessionId: string, paneId: string): void {
       update(sessionId, { paneId });
+    },
+
+    clearPaneId(sessionId: string): void {
+      update(sessionId, { paneId: undefined });
+    },
+
+    setCloseReason(sessionId: string, reason: ChildSessionCloseReason): void {
+      update(sessionId, { closeReason: reason });
+    },
+
+    setReopenRequested(sessionId: string, requested: boolean): void {
+      update(sessionId, { reopenRequested: requested });
+    },
+
+    clearCloseMetadata(sessionId: string): void {
+      update(sessionId, { closeReason: undefined, reopenRequested: false });
     },
 
     setFailureReason(sessionId: string, failureReason: string): void {
