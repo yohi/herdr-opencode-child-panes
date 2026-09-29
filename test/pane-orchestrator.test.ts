@@ -1238,4 +1238,90 @@ await vi.advanceTimersByTimeAsync(1000);
 expect(messageFixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
 });
 });
+
+  describe("reopen capacity", () => {
+    it("keeps a reopenable child retryable when capacity is full", async () => {
+      const fixture = createFixture({ maxPanes: 1
+});
+      fixture.registry.register(CHILD_ID, PARENT_ID);
+      fixture.registry.transitionTo(CHILD_ID, "spawning");
+      fixture.registry.transitionTo(CHILD_ID, "attached");
+      fixture.registry.transitionTo(CHILD_ID, "idle_pending");
+      fixture.registry.transitionTo(CHILD_ID, "closing");
+      fixture.registry.transitionTo(CHILD_ID, "reopenable");
+      fixture.registry.clearPaneId(CHILD_ID);
+      await attachChildById(fixture, "ses_busy");
+      fixture.splitPane.mockClear();
+      fixture.attach.mockClear();
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)).toMatchObject({
+        state: "reopenable",
+        reopenRequested: false,
+      });
+      expect(fixture.registry.get(CHILD_ID)?.failureReason).toBeUndefined();
+      expect(fixture.warn).toHaveBeenCalledWith(
+        "Reopen deferred because capacity was full",
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+    });
+
+    it("retries a capacity-blocked reopen on a later work signal", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      fixture.registry.register(CHILD_ID, PARENT_ID);
+      fixture.registry.transitionTo(CHILD_ID, "spawning");
+      fixture.registry.transitionTo(CHILD_ID, "attached");
+      fixture.registry.transitionTo(CHILD_ID, "idle_pending");
+      fixture.registry.transitionTo(CHILD_ID, "closing");
+      fixture.registry.transitionTo(CHILD_ID, "reopenable");
+      fixture.registry.clearPaneId(CHILD_ID);
+      await attachChildById(fixture, "ses_busy");
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+
+      await fixture.orchestrator.handleEvent(deletedEvent("ses_busy"));
+      fixture.splitPane.mockClear();
+      fixture.attach.mockClear();
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not split for repeated reopen work while capacity remains full", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      fixture.registry.register(CHILD_ID, PARENT_ID);
+      fixture.registry.transitionTo(CHILD_ID, "spawning");
+      fixture.registry.transitionTo(CHILD_ID, "attached");
+      fixture.registry.transitionTo(CHILD_ID, "idle_pending");
+      fixture.registry.transitionTo(CHILD_ID, "closing");
+      fixture.registry.transitionTo(CHILD_ID, "reopenable");
+      fixture.registry.clearPaneId(CHILD_ID);
+      await attachChildById(fixture, "ses_busy");
+      fixture.splitPane.mockClear();
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      await fixture.orchestrator.handleEvent(deltaActivityEvent(CHILD_ID));
+
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+    });
+
+    it("ignores initial capacity shortage with ignored(capacity_limit)", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(createdEvent("ses_childB", PARENT_ID));
+      await fixture.orchestrator.handleEvent(activityEvent("ses_childB"));
+
+      expect(fixture.registry.get("ses_childB")).toMatchObject({
+        state: "ignored",
+        failureReason: "capacity_limit",
+      });
+    });
+  });
 });

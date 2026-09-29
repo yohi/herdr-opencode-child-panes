@@ -166,7 +166,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
   }
 
-  function reserveSpawn(sessionId: string): boolean {
+  function reserveSpawn(sessionId: string, kind: SpawnKind): boolean {
     if (spawnReservations.has(sessionId)) {
       return true;
     }
@@ -174,6 +174,10 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       .listActive()
       .filter((session) => session.paneId !== undefined).length;
     if (paneCount + spawnReservations.size >= config.maxPanes) {
+      if (kind === "reopen") {
+        logger.warn("Reopen deferred because capacity was full", { sessionId });
+        return false;
+      }
       registry.setFailureReason(sessionId, "capacity_limit");
       registry.transitionTo(sessionId, "ignored");
       logger.warn("Child pane capacity reached", { sessionId });
@@ -284,7 +288,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
    * prevents concurrent children from exceeding the pane limit.
    */
   function enqueueSpawn(session: ChildSession, kind: SpawnKind): Promise<void> {
-    if (!reserveSpawn(session.sessionId)) {
+    if (!reserveSpawn(session.sessionId, kind)) {
       return Promise.resolve();
     }
     if (!registry.transitionTo(session.sessionId, "spawning")) {
