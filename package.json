@@ -1,6 +1,6 @@
 {
   "name": "@yohi/herdr-opencode-child-panes",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "OpenCode companion plugin that visualizes accepted child sessions in Herdr panes",
   "type": "module",
   "main": "./dist/index.js",
