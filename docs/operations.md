@@ -27,6 +27,7 @@ When `HERDR_CHILD_PANES_DEBUG` is enabled, additional diagnostic logs include se
 A child pane is closed after it has been idle for `HERDR_CHILD_PANES_IDLE_MS` milliseconds (default `10000`).
 
 - Idle is triggered by `session.status` containing `idle` or a `session.idle` event.
+- If an idle signal arrives while a session is still `spawning`, deferred idle cleanup is scheduled. Active status cancels this deferred cleanup, while message activity does not; the grace timer starts as soon as attach finishes.
 - Active status (`active`, `working`, `busy`, `running`, or `streaming`) during the grace period cancels the close timer and keeps the existing pane attached.
 - Meaningful activity (`message.updated`, `message.part.updated`, or `message.part.delta`) during `idle_pending` preserves the existing scheduled close. It does not reset the timer or create a new pane.
 - When the grace period expires, the pane is closed and the session becomes `reopenable`. The OpenCode child session itself continues running.

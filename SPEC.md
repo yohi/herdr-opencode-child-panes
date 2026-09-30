@@ -80,8 +80,12 @@ A child session managed by the plugin occupies exactly one of the following stat
 ### Operational transitions
 
 - `session.created` and ownership resolves to caller root → `waiting_activity`.
+- `session.deleted` while ownership resolution is pending → record pre-registration tombstone; discard pending work; session will never register or visualize.
 - First real activity (`message.updated`, `message.part.updated`, or `message.part.delta`) → `spawning` → split pane and attach → `attached`.
-- `session.status` reports `idle` or `session.idle` event → `idle_pending`.
+- Idle signal while `spawning` → record deferred idle cleanup (`idleDuringSpawn`).
+- Active status while `spawning` with deferred cleanup pending → clear deferred cleanup.
+- Meaningful activity while `spawning` with deferred cleanup pending → preserve deferred cleanup; close is scheduled immediately upon attach completion.
+- `session.status` reports `idle` or `session.idle` event while `attached` → `idle_pending`.
 - Active status while `idle_pending` → clear timer and transition to `attached`.
 - Meaningful activity while `idle_pending` → leave the existing close timer scheduled.
 - Idle grace period elapses → close pane → `closing` → `reopenable`.
@@ -96,11 +100,62 @@ A child session managed by the plugin occupies exactly one of the following stat
 - Split failure → `failed`. Attach failure → close the just-split pane, then `failed`.
 - `reopenable` plus `session.deleted` → `closing` → `closed`.
 
+### Signal categorization and work dispatch
+
+The orchestrator classifies incoming session events into specific work categories:
+
+- **Active status**: `session.status` where `status.type` is one of `active`, `working`, `busy`, `running`, or `streaming`.
+- **Meaningful activity**: `message.updated`, `message.part.updated`, or `message.part.delta`.
+- **Idle signals**: `session.status` with `status.type === "idle"`, or `session.idle` event.
+- **Deletion signal**: `session.deleted`.
+
+#### Work signal decision table
+
+| Current state | Active status | Meaningful activity |
+| --- | --- | --- |
+| `waiting_activity` | Attempt initial spawn (`kind = "initial"`) | Attempt initial spawn (`kind = "initial"`) |
+| `spawning` | Preserve current spawn; clear `idleDuringSpawn` | Preserve current spawn; do **not** clear `idleDuringSpawn` |
+| `attached` | No-op | No-op |
+| `idle_pending` | Cancel idle timer and transition to `attached` | Preserve existing `idle_pending` state and timer |
+| `closing` (`closeReason === "idle"`) | Record `reopenRequested = true` | Record `reopenRequested = true` |
+| `closing` (`closeReason === "deleted"`) | Ignored | Ignored |
+| `reopenable` | Attempt reopen spawn (`kind = "reopen"`) | Attempt reopen spawn (`kind = "reopen"`) |
+| `closed`, `ignored`, `failed` | Ignored | Ignored |
+
+### Data model and close metadata
+
+Each registered child session in `ChildSessionRegistry` maintains:
+
+```ts
+export type ChildSessionCloseReason = "idle" | "deleted";
+
+export interface ChildSession {
+  readonly sessionId: string;
+  readonly parentId: string;
+  readonly state: ChildSessionState;
+  readonly paneId?: string;
+  readonly closeReason?: ChildSessionCloseReason;
+  readonly reopenRequested: boolean;
+  readonly failureReason?: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+```
+
+- `closeReason`: Records the intent when entering `closing`. Set to `"idle"` by idle grace expiration; set or promoted to `"deleted"` by `session.deleted`. Cleared upon transition to `reopenable` or `closed`.
+- `reopenRequested`: Tracks whether work arrived while `closing(idle)`. Updated by last-signal-wins between work (`true`) and idle (`false`). Reset to `false` when entering `closing`, promoted to `deleted`, or when metadata is cleared.
+- `paneId`: Defined only while a live pane is attached or in the process of closing. Cleared (`undefined`) when close finishes; a `reopenable` session owns no live pane.
+
+The orchestrator also maintains transient in-memory state for unregistered sessions:
+- `ownershipPending: Set<string>`: Sessions whose root-session ownership resolution is currently in flight.
+- `pendingSpawnRequests: Set<string>`: Work requests received before ownership resolution finishes.
+- `deletedBeforeRegistration: Set<string>`: Tombstones for sessions deleted while ownership resolution was pending. Persists until `dispose()`.
+
 ## 5. Lifecycle semantics
 
 ### Detection
 
-On `session.created`, the plugin resolves the parent to the caller pane's root session. Only sessions owned by or descending from that root are tracked.
+On `session.created`, the plugin asynchronously resolves the parent to the caller pane's root session. Only sessions owned by or descending from that root are tracked. While resolution is in flight, the session is tracked in transient ownership-pending state. If `session.deleted` arrives while ownership resolution is pending, a tombstone is recorded so completion will never register the session or replay pending work.
 
 ### Pane creation
 
@@ -113,6 +168,7 @@ On `session.created`, the plugin resolves the parent to the caller pane's root s
 ### Idle
 
 - `session.status` containing `idle` or a `session.idle` event transitions an `attached` session to `idle_pending` and starts the close timer (`HERDR_CHILD_PANES_IDLE_MS`).
+- If an idle signal arrives while a session is still `spawning`, deferred idle cleanup is recorded (`idleDuringSpawn`). Active status received before attach completes cancels this deferred cleanup, while meaningful message activity leaves it scheduled; upon attach completion, the session immediately enters `idle_pending` and arms the timer.
 - Active status during `idle_pending` cancels the timer and returns the session to `attached`. The same pane remains attached; a second pane is not created.
 - Meaningful activity during `idle_pending` preserves the existing scheduled close. It does not cancel the timer or change the current pane.
 - If the grace period expires, the pane is closed and the session moves to `reopenable`, not `closed`. The OpenCode child session itself continues running; only the managed pane is removed.
@@ -120,12 +176,17 @@ On `session.created`, the plugin resolves the parent to the caller pane's root s
 ### Reopen after idle close
 
 - While the session is `reopenable`, a work signal (active status or meaningful activity) enqueues a new split/attach for the same `sessionId` using `opencode attach <session-id>`.
-- The new pane is created through the same serialized `AsyncQueue` that handled the close, so successor reopen runs strictly after the close settles.
-- A reopened session follows the same fixed right-column split policy and is treated as a newly added visible child. The old pane position is not restored.
+- If work arrives while an idle close is currently in flight (`closing` with `closeReason = idle`), `reopenRequested` demand is set to `true`. A later idle signal during the close resets `reopenRequested` back to `false` (last-signal-wins).
+- When the old pane close completes inside `AsyncQueue`, the close task clears `paneId`, transitions to `reopenable`, and (when `reopenRequested` was latched and capacity allows) synchronously claims `spawning` and enqueues the successor split/attach onto `AsyncQueue` without awaiting it (`void enqueueSpawn`). This non-awaiting handoff prevents FIFO promise-tail self-deadlock while ensuring Herdr mutations remain strictly serialized.
+- A reopened session follows the same fixed right-column split policy and is treated as a newly added visible child. The old pane ID is removed from the live layout before the reopen split plan is calculated, and rebalancing follows normal layout rules; former pane position is not restored.
+- The number of reopen cycles for a child session is unbounded until `session.deleted` or unrecoverable failure.
 
 ### Deletion
 
-- `session.deleted` permanently terminates visualization. The pane is closed through the serialized mutation queue if one exists; sessions without a managed pane transition to terminal `closed` without touching Herdr.
+- `session.deleted` permanently terminates visualization:
+  - Registered sessions move through `closing` to terminal `closed`. The pane is closed through the serialized mutation queue if one exists; sessions without a managed pane (including `waiting_activity` or `reopenable` sessions deleted while no pane is open) transition directly to terminal `closed` without touching Herdr.
+  - If `session.deleted` arrives while an idle close is in flight (`closing(idle)`), close intent is promoted to `closeReason = deleted` and `reopenRequested` is cleared; completion transitions to terminal `closed` instead of `reopenable`.
+  - If `session.deleted` arrives while ownership resolution is pending, pending work is deleted and a durable pre-registration tombstone is recorded. When ownership resolution finishes, registration and spawn replay are skipped. Subsequent work signals and duplicate `session.created` events for that `sessionId` are ignored until orchestrator disposal.
 - Close failures are retried with backoff. After exhausting retries, the session moves to `failed` with reason `close_failed`.
 
 ## 6. Capacity semantics
@@ -142,6 +203,7 @@ On `session.created`, the plugin resolves the parent to the caller pane's root s
 - Attach failure: the just-split pane is closed to avoid leaving an orphan pane, then the session moves to `failed`.
 - Close failure: retried with bounded backoff. After retries are exhausted, the session moves to `failed` with reason `close_failed`. No reopen is attempted.
 - Reopen capacity pressure: the session remains `reopenable`; a later work signal retries when capacity is available.
+- Queue unavailability during reopen handoff: if the queue is disposed before the successor spawn begins, the reservation is released and the session transitions to `failed` with reason `spawn_failed`.
 - A Herdr CLI error never crashes the OpenCode server. The plugin logs a warning and leaves the child task untouched.
 - The plugin only closes panes it created. The caller pane (`HERDR_PANE_ID`) is never closed.
 - Children of an `ignored` or `failed` parent are not visualized. Failures do not cascade to orphan panes.
@@ -176,5 +238,7 @@ On `session.created`, the plugin resolves the parent to the caller pane's root s
 - One managed child session owns at most one managed pane at any time.
 - A session cannot be reopened after it has reached terminal `closed`.
 - A session is not split before the old pane close settles; successor reopen is serialized behind the close through the same `AsyncQueue`.
+- A queue task never awaits another task enqueued on the same `AsyncQueue`.
 - No duplicate pane is created for the same `sessionId`: the synchronous `spawning` or `reopenable → spawning` transition is the idempotency gate.
 - `session.deleted` received while ownership resolution is pending prevents registration and any later resurrection for that `sessionId`.
+- Reopen count is unbounded across repeated idle-close and reopen cycles until `session.deleted` or unrecoverable failure.
