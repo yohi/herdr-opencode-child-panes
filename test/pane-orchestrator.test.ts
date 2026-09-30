@@ -1459,6 +1459,24 @@ describe("createPaneOrchestrator", () => {
       fixture.registry.clearPaneId(CHILD_ID);
     }
 
+    async function driveCloseRetryWithFinalDemand(
+      fixture: Fixture,
+      finalDemand: "idle" | "work",
+    ): Promise<void> {
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+      if (finalDemand === "work") {
+        await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+        expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+      }
+      await vi.advanceTimersByTimeAsync(500);
+    }
+
     it("clears pane ownership and becomes reopenable after successful idle close", async () => {
       const fixture = createFixture();
 
@@ -1781,37 +1799,18 @@ describe("createPaneOrchestrator", () => {
     it("stays reopenable after a close retry when the final demand is false", async () => {
       const fixture = createFixture();
       fixture.closePane.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
-      await attachChild(fixture);
-      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
-      await vi.advanceTimersByTimeAsync(1000);
-
-      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
-      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
-      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
-      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
-
-      await vi.advanceTimersByTimeAsync(500);
+      await driveCloseRetryWithFinalDemand(fixture, "idle");
 
       expect(fixture.closePane).toHaveBeenCalledTimes(2);
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
       expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
     });
 
     it("reopens after a close retry when the final demand is true", async () => {
       const fixture = createFixture();
       fixture.closePane.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
-      await attachChild(fixture);
-      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
-      await vi.advanceTimersByTimeAsync(1000);
-
-      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
-      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
-      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
-      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
-      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
-      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
-
-      await vi.advanceTimersByTimeAsync(500);
+      await driveCloseRetryWithFinalDemand(fixture, "work");
 
       expect(fixture.closePane).toHaveBeenCalledTimes(2);
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
