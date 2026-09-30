@@ -52,12 +52,15 @@ function statusEvent(sessionId: string, statusType: string): Event {
 function idleEvent(sessionId: string): Event {
   return eventWith("session.idle", { sessionID: sessionId });
 }
+function messageUpdatedEvent(sessionId: string): Event {
+  return eventWith("message.updated", { info: { sessionID: sessionId } });
+}
 
 function deletedEvent(sessionId: string): Event {
   return eventWith("session.deleted", { info: { id: sessionId } });
 }
 
-  interface Fixture {
+interface Fixture {
   readonly orchestrator: PaneOrchestrator;
   readonly registry: ChildSessionRegistry;
   readonly getPaneLayout: Mock<HerdrClient["getPaneLayout"]>;
@@ -256,6 +259,106 @@ describe("createPaneOrchestrator", () => {
 
     expect(fixture.splitPane).not.toHaveBeenCalled();
     expect(fixture.attach).not.toHaveBeenCalled();
+  });
+  describe("pre-registration deletion", () => {
+    /**
+     * Hold `isOwnedChild()` unresolved and start the created event's
+     * ownership resolution; returns its promise and the resolver release.
+     */
+    async function holdOwnershipResolution(
+      fixture: Fixture,
+    ): Promise<{ created: Promise<void>; resolveOwnership: (owned: boolean) => void }> {
+      let resolveOwnership: (owned: boolean) => void = () => {};
+      fixture.isOwnedChild.mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveOwnership = resolve;
+          }),
+      );
+      const created = fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
+      await vi.waitFor(() => expect(fixture.isOwnedChild).toHaveBeenCalledTimes(1));
+      return {
+        created,
+        resolveOwnership: (owned) => resolveOwnership(owned),
+      };
+    }
+
+    it("does not resurrect a child deleted while ownership resolution is pending", async () => {
+      const fixture = createFixture();
+      const { created, resolveOwnership } = await holdOwnershipResolution(fixture);
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      await fixture.orchestrator.handleEvent(deltaActivityEvent(CHILD_ID));
+
+      resolveOwnership(true);
+      await created;
+
+      expect(fixture.registry.has(CHILD_ID)).toBe(false);
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+      expect(fixture.attach).not.toHaveBeenCalled();
+      expect(fixture.info).toHaveBeenCalledWith(
+        "Pre-registration deletion prevented child registration",
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+    });
+
+    it("does not start another ownership resolution for duplicate create while one is pending", async () => {
+      const fixture = createFixture();
+      const { created, resolveOwnership } = await holdOwnershipResolution(fixture);
+
+      await fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
+
+      expect(fixture.isOwnedChild).toHaveBeenCalledTimes(1);
+
+      resolveOwnership(true);
+      await created;
+
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("waiting_activity");
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+    });
+
+    it("keeps a pre-registration deletion tombstone until dispose", async () => {
+      const fixture = createFixture();
+      const { created, resolveOwnership } = await holdOwnershipResolution(fixture);
+
+      await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+      resolveOwnership(true);
+      await created;
+
+      expect(fixture.registry.has(CHILD_ID)).toBe(false);
+
+      // Duplicate create and work must not repopulate pending spawn state.
+      await fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+
+      expect(fixture.isOwnedChild).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.has(CHILD_ID)).toBe(false);
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+
+      await fixture.orchestrator.dispose();
+
+      // dispose must clear transient bookkeeping and accept no later events.
+      await expect(
+        fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID)),
+      ).resolves.toBeUndefined();
+      expect(fixture.registry.has(CHILD_ID)).toBe(false);
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+    });
+
+    it("does not register a child if dispose happens while ownership resolution is pending", async () => {
+      const fixture = createFixture();
+      const { created, resolveOwnership } = await holdOwnershipResolution(fixture);
+
+      await fixture.orchestrator.dispose();
+      resolveOwnership(true);
+      await created;
+
+      expect(fixture.registry.has(CHILD_ID)).toBe(false);
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+      expect(fixture.attach).not.toHaveBeenCalled();
+    });
   });
 
   it("splits once and attaches on the first meaningful activity", async () => {
@@ -796,7 +899,7 @@ describe("createPaneOrchestrator", () => {
 
       expect(fixture.closePane).toHaveBeenCalledTimes(1);
       expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("does not arm a second timer for duplicate idle events", async () => {
@@ -810,7 +913,7 @@ describe("createPaneOrchestrator", () => {
       expect(vi.getTimerCount()).toBe(timerCount);
       await vi.advanceTimersByTimeAsync(1000);
       expect(fixture.closePane).toHaveBeenCalledTimes(1);
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("keeps the close scheduled when a message event arrives after idle", async () => {
@@ -824,7 +927,7 @@ describe("createPaneOrchestrator", () => {
       expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(1000);
       expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("also resumes the session on an active status before the timeout", async () => {
@@ -851,7 +954,7 @@ describe("createPaneOrchestrator", () => {
 
       expect(fixture.closePane).toHaveBeenCalledTimes(1);
       expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("closes a child that becomes idle while its pane is still attaching", async () => {
@@ -864,7 +967,7 @@ describe("createPaneOrchestrator", () => {
       await vi.advanceTimersByTimeAsync(1000);
 
       expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("keeps the deferred close when a final activity event follows idle during attach", async () => {
@@ -877,7 +980,7 @@ describe("createPaneOrchestrator", () => {
       await vi.advanceTimersByTimeAsync(1000);
 
       expect(fixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("does not log a scheduled close when the deferred idle transition fails", async () => {
@@ -969,7 +1072,7 @@ describe("createPaneOrchestrator", () => {
       await vi.advanceTimersByTimeAsync(1000);
 
       expect(fixture.closePane).not.toHaveBeenCalled();
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("closes nothing when an idle session without a pane times out", async () => {
@@ -983,7 +1086,7 @@ describe("createPaneOrchestrator", () => {
       await vi.advanceTimersByTimeAsync(1000);
 
       expect(fixture.closePane).not.toHaveBeenCalled();
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("retries the close with backoff and marks the session failed on exhaustion", async () => {
@@ -1016,7 +1119,7 @@ describe("createPaneOrchestrator", () => {
       await vi.advanceTimersByTimeAsync(2500);
 
       expect(fixture.closePane).toHaveBeenCalledTimes(3);
-      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
     });
 
     it("cancels pending timers on dispose without closing attached panes", async () => {
@@ -1141,7 +1244,7 @@ describe("createPaneOrchestrator", () => {
     afterEach(() => {
       vi.useRealTimers();
     });
-function stageReopenableWithoutPane(fixture: Fixture, sessionId: string): void {
+    function stageReopenableWithoutPane(fixture: Fixture, sessionId: string): void {
       fixture.registry.register(sessionId, PARENT_ID);
       fixture.registry.transitionTo(sessionId, "spawning");
       fixture.registry.transitionTo(sessionId, "attached");
@@ -1165,9 +1268,7 @@ function stageReopenableWithoutPane(fixture: Fixture, sessionId: string): void {
 
       await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
 
-      expect(fixture.attach).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: CHILD_ID }),
-      );
+      expect(fixture.attach).toHaveBeenCalledWith(expect.objectContaining({ sessionId: CHILD_ID }));
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
     });
 
@@ -1177,9 +1278,7 @@ function stageReopenableWithoutPane(fixture: Fixture, sessionId: string): void {
 
       await fixture.orchestrator.handleEvent(messageUpdatedEvent(CHILD_ID));
 
-      expect(fixture.attach).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: CHILD_ID }),
-      );
+      expect(fixture.attach).toHaveBeenCalledWith(expect.objectContaining({ sessionId: CHILD_ID }));
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
     });
 
@@ -1189,9 +1288,7 @@ function stageReopenableWithoutPane(fixture: Fixture, sessionId: string): void {
 
       await fixture.orchestrator.handleEvent(messagePartUpdatedEvent(CHILD_ID));
 
-      expect(fixture.attach).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: CHILD_ID }),
-      );
+      expect(fixture.attach).toHaveBeenCalledWith(expect.objectContaining({ sessionId: CHILD_ID }));
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
     });
 
@@ -1234,15 +1331,14 @@ function stageReopenableWithoutPane(fixture: Fixture, sessionId: string): void {
       await messageFixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
       releaseMessageAttach(true);
       await messageSpawning;
-await vi.advanceTimersByTimeAsync(1000);
-expect(messageFixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
-});
-});
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(messageFixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+    });
+  });
 
   describe("reopen capacity", () => {
     it("keeps a reopenable child retryable when capacity is full", async () => {
-      const fixture = createFixture({ maxPanes: 1
-});
+      const fixture = createFixture({ maxPanes: 1 });
       fixture.registry.register(CHILD_ID, PARENT_ID);
       fixture.registry.transitionTo(CHILD_ID, "spawning");
       fixture.registry.transitionTo(CHILD_ID, "attached");
@@ -1322,6 +1418,510 @@ expect(messageFixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
         state: "ignored",
         failureReason: "capacity_limit",
       });
+    });
+  });
+
+  describe("idle close reopenability", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Start an idle close and hold its `closePane()` promise unresolved. */
+    async function blockClosePane(fixture: Fixture): Promise<(closed: boolean) => void> {
+      let releaseClose: (closed: boolean) => void = () => {};
+      const closeStarted = new Promise<void>((resolve) => {
+        fixture.closePane.mockImplementationOnce(
+          () =>
+            new Promise<boolean>((resolveClose) => {
+              releaseClose = resolveClose;
+              resolve();
+            }),
+        );
+      });
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+      await closeStarted;
+      return releaseClose;
+    }
+
+    function stageReopenableWithoutPaneLocal(fixture: Fixture): void {
+      fixture.registry.register(CHILD_ID, PARENT_ID);
+      fixture.registry.transitionTo(CHILD_ID, "spawning");
+      fixture.registry.transitionTo(CHILD_ID, "attached");
+      fixture.registry.transitionTo(CHILD_ID, "idle_pending");
+      fixture.registry.transitionTo(CHILD_ID, "closing");
+      fixture.registry.transitionTo(CHILD_ID, "reopenable");
+      fixture.registry.clearPaneId(CHILD_ID);
+    }
+
+    it("clears pane ownership and becomes reopenable after successful idle close", async () => {
+      const fixture = createFixture();
+
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const session = fixture.registry.get(CHILD_ID);
+      expect(session?.state).toBe("reopenable");
+      expect(session?.paneId).toBeUndefined();
+      expect(session?.closeReason).toBeUndefined();
+      expect(session?.reopenRequested).toBe(false);
+      expect(fixture.info).toHaveBeenCalledWith(
+        "idle-closed child became reopenable",
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+    });
+
+    it.each(["session.idle", "session.status idle"])(
+      "later %s cancels reopen demand while the old close continues",
+      async (source) => {
+        const fixture = createFixture();
+        const releaseClose = await blockClosePane(fixture);
+
+        await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+        expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+        const laterIdle =
+          source === "session.idle" ? idleEvent(CHILD_ID) : statusEvent(CHILD_ID, "idle");
+        await fixture.orchestrator.handleEvent(laterIdle);
+        expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+        expect(fixture.debug).toHaveBeenCalledWith(
+          "later idle cancelled pending reopen",
+          expect.objectContaining({ sessionId: CHILD_ID }),
+        );
+
+        releaseClose(true);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+      },
+    );
+
+    it("promotes an idle close to permanent deletion", async () => {
+      const fixture = createFixture();
+      const releaseClose = await blockClosePane(fixture);
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+      await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.closeReason).toBe("deleted");
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+      expect(fixture.debug).toHaveBeenCalledWith(
+        "pending reopen cancelled because session.deleted arrived",
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+
+      releaseClose(true);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.closePane).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get(CHILD_ID)?.closeReason).toBeUndefined();
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+    });
+
+    it("closes a reopenable session permanently when session.deleted arrives with no pane", async () => {
+      const fixture = createFixture();
+      stageReopenableWithoutPaneLocal(fixture);
+
+      await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+
+      expect(fixture.closePane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.closeReason).toBeUndefined();
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+    });
+
+    it("reopens after a close retry when work latched reopen demand", async () => {
+      const fixture = createFixture();
+      fixture.closePane.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closing");
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+      expect(fixture.debug).toHaveBeenCalledWith(
+        "work requested reopen while idle close was in progress",
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(2);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+      expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      expect(fixture.attach).toHaveBeenCalledTimes(2);
+      expect(fixture.registry.get(CHILD_ID)?.closeReason).toBeUndefined();
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+    });
+
+    it("cancels reopen demand with a later idle before the closing retry succeeds", async () => {
+      const fixture = createFixture();
+      fixture.closePane.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+      expect(fixture.debug).toHaveBeenCalledWith(
+        "later idle cancelled pending reopen",
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(2);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+    });
+
+    it("clears reopen demand and close metadata when closing retries are exhausted", async () => {
+      const fixture = createFixture();
+      fixture.closePane.mockResolvedValue(false);
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+      // Initial attempt plus closeRetries (3) backoff retries, then exhaustion.
+      await vi.advanceTimersByTimeAsync(3500);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(4);
+      expect(fixture.registry.get(CHILD_ID)).toMatchObject({
+        state: "failed",
+        failureReason: "close_failed",
+      });
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+      expect(fixture.registry.get(CHILD_ID)?.closeReason).toBeUndefined();
+    });
+
+    it("rereads closing metadata when work, idle, and deletion arrive while closePane is unresolved", async () => {
+      const fixture = createFixture();
+      const releaseClose = await blockClosePane(fixture);
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+
+      await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.closeReason).toBe("deleted");
+
+      releaseClose(true);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The finalizer rereads the promoted metadata instead of a stale
+      // pre-await snapshot, so the session ends closed, not reopenable.
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+      expect(fixture.registry.get(CHILD_ID)?.closeReason).toBeUndefined();
+      expect(fixture.registry.get(CHILD_ID)?.paneId).toBeUndefined();
+    });
+
+    it("hands an idle close to exactly one reopen without awaiting the successor queue task", async () => {
+      const fixture = createFixture();
+      const calls: string[] = [];
+      let releaseClose: (closed: boolean) => void = () => {};
+      let releaseReopenSplit: ((paneId: string | null) => void) | undefined;
+
+      // Hold the initial idle close in flight, then latch reopen demand via
+      // active status while closing. Resolving the close hands the reopen
+      // off non-awaitingly, so the reopen split records after the close
+      // resolves while the close task itself has already returned.
+      fixture.closePane.mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolveClose) => {
+            releaseClose = resolveClose;
+          }),
+      );
+      fixture.splitPane
+        .mockImplementationOnce(() => Promise.resolve(NEW_PANE_ID))
+        .mockImplementationOnce(() => {
+          calls.push("split");
+          return new Promise<string | null>((resolve) => {
+            releaseReopenSplit = resolve;
+          });
+        });
+
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closing");
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+      releaseClose(true);
+
+      // The handoff must start the reopen split without awaiting it: wait
+      // until the successor task is inside `splitPane`, then release.
+      await vi.waitFor(() => expect(calls.length).toBe(1));
+      releaseReopenSplit?.("pane-reopen");
+
+      await vi.waitFor(() => expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached"));
+      expect(calls).toEqual(["split"]);
+      expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      expect(fixture.attach).toHaveBeenCalledTimes(2);
+      expect(fixture.info).toHaveBeenCalledWith(
+        "Child reopened and attached",
+        expect.objectContaining({ sessionId: CHILD_ID, paneId: "pane-reopen" }),
+      );
+    });
+
+    it("uses the final work signal after work-idle-work and reopens exactly once", async () => {
+      const fixture = createFixture();
+      const releaseClose = await blockClosePane(fixture);
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+      releaseClose(true);
+      await vi.advanceTimersByTimeAsync(0);
+
+      await vi.waitFor(() => expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached"));
+      expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      expect(fixture.attach).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not immediately reopen when the final closing signal is idle", async () => {
+      const fixture = createFixture();
+      const releaseClose = await blockClosePane(fixture);
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+
+      releaseClose(true);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+      expect(fixture.attach).toHaveBeenCalledTimes(1);
+    });
+
+    it("hands an idle close to a reopen on meaningful activity without awaiting the successor queue task", async () => {
+      const fixture = createFixture();
+      const releaseClose = await blockClosePane(fixture);
+
+      let releaseReopenSplit: ((paneId: string | null) => void) | undefined;
+      fixture.splitPane.mockImplementationOnce(async () => {
+        return new Promise<string | null>((resolve) => {
+          releaseReopenSplit = resolve;
+        });
+      });
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      releaseClose(true);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The close-success handoff has started the reopen spawn; the reopen
+      // split is now the held in-flight call. Release it to finish attaching.
+      await vi.waitFor(() => expect(releaseReopenSplit).toBeDefined());
+      releaseReopenSplit?.("pane-reopen");
+
+      await vi.waitFor(() => expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached"));
+      expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      expect(fixture.attach).toHaveBeenCalledTimes(2);
+    });
+
+    it("reopens through the actual idle close path when work arrives after close completes", async () => {
+      const fixture = createFixture();
+
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+      expect(fixture.registry.get(CHILD_ID)?.paneId).toBeUndefined();
+      // The old pane position was retired: the reopen split must not target it.
+      expect(fixture.splitPane).not.toHaveBeenCalledWith(
+        expect.objectContaining({ paneId: NEW_PANE_ID }),
+      );
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+
+      expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      expect(fixture.attach).toHaveBeenCalledWith(expect.objectContaining({ sessionId: CHILD_ID }));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("reopens a reopenable child on message.updated after actual idle close", async () => {
+      const fixture = createFixture();
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await fixture.orchestrator.handleEvent(messageUpdatedEvent(CHILD_ID));
+
+      expect(fixture.attach).toHaveBeenCalledWith(expect.objectContaining({ sessionId: CHILD_ID }));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("stays reopenable after a close retry when the final demand is false", async () => {
+      const fixture = createFixture();
+      fixture.closePane.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(2);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+    });
+
+    it("reopens after a close retry when the final demand is true", async () => {
+      const fixture = createFixture();
+      fixture.closePane.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(fixture.closePane).toHaveBeenCalledTimes(2);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+      expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      expect(fixture.attach).toHaveBeenCalledTimes(2);
+    });
+
+    it("fails a claimed reopen cleanly when queue disposal rejects the successor enqueue", async () => {
+      const fixture = createFixture();
+      const releaseClose = await blockClosePane(fixture);
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(true);
+
+      const disposing = fixture.orchestrator.dispose();
+      releaseClose(true);
+      await disposing;
+
+      await vi.waitFor(() =>
+        expect(fixture.registry.get(CHILD_ID)).toMatchObject({
+          state: "failed",
+          failureReason: "spawn_failed",
+        }),
+      );
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+      expect(fixture.warn).toHaveBeenCalledWith(
+        "reopen enqueue failed because the serialized queue was unavailable",
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+    });
+
+    it("reopens using the current live layout rather than the closed pane location", async () => {
+      const fixture = createFixture();
+      const paneIds = ["pane-2", "pane-3", "pane-4", "pane-5"];
+      let splitIndex = 0;
+      fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+      await attachChildById(fixture, "ses_childA");
+      await attachChildById(fixture, "ses_childB");
+      await attachChildById(fixture, "ses_childC");
+
+      await fixture.orchestrator.handleEvent(idleEvent("ses_childA"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.registry.get("ses_childA")?.state).toBe("reopenable");
+
+      await fixture.orchestrator.handleEvent(statusEvent("ses_childA", "active"));
+
+      expect(fixture.splitPane).toHaveBeenLastCalledWith({
+        paneId: "pane-4",
+        direction: "down",
+        ratio: 0.5,
+        noFocus: true,
+      });
+      expect(fixture.resizePane).toHaveBeenCalledWith({
+        paneId: "pane-4",
+        direction: "up",
+        amount: 1 / 6,
+      });
+      expect(fixture.resizePane).toHaveBeenCalledWith({
+        paneId: "pane-4",
+        direction: "up",
+        amount: 1 / 6,
+      });
+    });
+
+    it("closes a newly split pane when deletion arrives during a reopen spawn", async () => {
+      const fixture = createFixture();
+      stageReopenableWithoutPaneLocal(fixture);
+
+      let releaseReopenSplit: ((paneId: string | null) => void) | undefined;
+      fixture.splitPane.mockImplementationOnce(
+        () =>
+          new Promise<string | null>((resolve) => {
+            releaseReopenSplit = resolve;
+          }),
+      );
+
+      const reopening = fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      // Wait until the queued reopen task is actually inside `splitPane`; a
+      // deletion observed before the task starts would be finalized against
+      // the pre-spawn reopenable state instead of racing the spawned pane.
+      await vi.waitFor(() => expect(fixture.splitPane).toHaveBeenCalledTimes(1));
+
+      const deletion = fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+      releaseReopenSplit?.("pane-reopen");
+      await Promise.all([reopening, deletion]);
+
+      expect(fixture.closePane).toHaveBeenCalledWith("pane-reopen");
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+    });
+
+    it("supports multiple idle-close-reopen cycles for the same child session", async () => {
+      const fixture = createFixture();
+      const paneIds = ["pane-2", "pane-3", "pane-4"];
+      let splitIndex = 0;
+      fixture.splitPane.mockImplementation(async () => paneIds[splitIndex++] ?? null);
+
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+
+      await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+      await vi.advanceTimersByTimeAsync(1000);
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+
+      expect(fixture.attach).toHaveBeenCalledTimes(3);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+      expect(fixture.registry.get(CHILD_ID)?.closeReason).toBeUndefined();
+      expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false);
     });
   });
 });
