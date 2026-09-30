@@ -9,7 +9,7 @@
 
 An [OpenCode](https://opencode.ai) companion plugin that visualizes accepted child sessions (subagents) as [Herdr](https://github.com/herdrdev/herdr) panes.
 
-When an OpenCode session running inside a Herdr pane launches a subagent, this plugin detects it from `session.created`, waits for the first real activity, splits the caller pane to the right, and attaches the child session with `opencode attach`. Additional child panes stack in the right column. Idle or deleted sessions close their panes automatically.
+When an OpenCode session running inside a Herdr pane launches a subagent, this plugin detects it from `session.created`, waits for the first real activity, splits the caller pane to the right, and attaches the child session with `opencode attach`. Additional child panes stack in the right column. Idle sessions close their panes automatically, but the child session itself keeps running; later work on the same child session can create a new pane attached to that same session. When a child session is deleted, its visualization ends permanently.
 
 ## Quick Start
 
@@ -42,14 +42,16 @@ When an OpenCode session running inside a Herdr pane launches a subagent, this p
 - Detects child sessions from OpenCode events, no HTTP API calls required
 - Splits the caller pane and attaches children with `opencode attach`
 - Stacks multiple child panes in a fixed right-column layout
-- Closes idle or deleted child panes automatically
+- Closes idle child panes automatically while keeping the child session alive
+- Reopens a pane for the same child session when it resumes work
+- Permanently ends visualization when a child session is deleted
 - Respects a configurable maximum number of child panes
 - Isolates failures so a Herdr CLI error cannot crash OpenCode
 - Compatible with sessions dispatched by OMO without a private dependency on OMO
 
 ## How It Works
 
-The plugin consumes OpenCode events through `@opencode-ai/plugin` hooks and drives the Herdr CLI through a thin adapter. It keeps a small registry of child sessions, splits panes when activity starts, and cleans them up on idle or deletion. For the module map, control flow, and design invariants, see [docs/architecture.md](docs/architecture.md).
+The plugin consumes OpenCode events through `@opencode-ai/plugin` hooks and drives the Herdr CLI through a thin adapter. It keeps a small registry of child sessions, splits panes when activity starts, closes panes on idle timeout, and can reopen a pane when the same child session resumes work. For the module map, control flow, and design invariants, see [docs/architecture.md](docs/architecture.md).
 
 ## Usage
 
@@ -59,7 +61,7 @@ Once the plugin is installed, use OpenCode normally inside a Herdr pane. For exa
 Use a subagent to summarize README.md.
 ```
 
-When the subagent starts, a new pane appears to the right and runs `opencode attach <child-session-id>`. The main pane keeps focus. When the child session goes idle or is deleted, its pane closes automatically.
+When the subagent starts, a new pane appears to the right and runs `opencode attach <child-session-id>`. The main pane keeps focus. If the subagent goes idle, its pane closes, but the session itself keeps running. If the same subagent resumes work, the plugin creates a fresh pane attached to the same session. When the subagent is deleted, its visualization ends permanently.
 
 ## Configuration
 
