@@ -143,6 +143,20 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
   const spawnReservations = new Set<string>();
   const idleDuringSpawn = new Set<string>();
   const pendingSpawnRequests = new Set<string>();
+  /**
+   * Sessions whose ownership resolution is currently in flight. Duplicate
+   * created events and pre-registration deletions during this window must
+   * not start a second resolution or repopulate pending spawn state.
+   */
+  const ownershipPending = new Set<string>();
+  /**
+   * Deletion tombstones for sessions deleted while their ownership
+   * resolution was pending. They make the deletion irreversible: neither a
+   * late work signal nor a duplicate create may resurrect the child.
+   * Cleared on dispose, so a restart starts with clean bookkeeping.
+   */
+  const deletedBeforeRegistration = new Set<string>();
+
   const childPaneIds: string[] = [];
   let disposed = false;
 
@@ -154,6 +168,8 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
 
   function fail(sessionId: string, reason: string): void {
     idleDuringSpawn.delete(sessionId);
+    // A failure finalizes the session; stale close metadata must not survive.
+    registry.clearCloseMetadata(sessionId);
     registry.setFailureReason(sessionId, reason);
     registry.transitionTo(sessionId, "failed");
     logger.warn("Child pane lifecycle failure", { sessionId, reason });
@@ -164,6 +180,31 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (index >= 0) {
       childPaneIds.splice(index, 1);
     }
+  }
+
+  /**
+   * Finalize a successful Herdr close by rereading the live close metadata:
+   * work, a later idle, or deletion may have changed it while `closePane()`
+   * was in flight. Delete closes end in terminal `closed`; idle closes end in
+   * `reopenable` and return the `reopenRequested` snapshot observed at success
+   * time, which the reopen handoff consumes.
+   */
+  function finalizeSuccessfulClose(sessionId: string, childPaneId?: string): boolean {
+    if (childPaneId !== undefined) {
+      removeChildPaneId(childPaneId);
+    }
+    registry.clearPaneId(sessionId);
+    const current = registry.get(sessionId);
+    if (current?.closeReason === "deleted") {
+      registry.transitionTo(sessionId, "closed");
+      registry.clearCloseMetadata(sessionId);
+      return false;
+    }
+    const reopenRequested = current?.reopenRequested ?? false;
+    registry.transitionTo(sessionId, "reopenable");
+    registry.clearCloseMetadata(sessionId);
+    logger.info("idle-closed child became reopenable", { sessionId });
+    return reopenRequested;
   }
 
   function reserveSpawn(sessionId: string, kind: SpawnKind): boolean {
@@ -192,8 +233,8 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     registry.setPaneId(sessionId, childPaneId);
     const closed = await herdrClient.closePane(childPaneId);
     if (closed) {
-      removeChildPaneId(childPaneId);
-      registry.transitionTo(sessionId, "closed");
+      // Deletion closes are terminal; no handoff is possible.
+      finalizeSuccessfulClose(sessionId, childPaneId);
       logger.info("Child pane closed after session deletion", {
         sessionId,
         paneId: childPaneId,
@@ -296,12 +337,14 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return Promise.resolve();
     }
 
+    let taskStarted = false;
     return queue
       .enqueue(async () => {
+        taskStarted = true;
         const current = registry.get(session.sessionId);
         if (!current || current.state !== "spawning") {
           if (current?.state === "closing" && current.paneId === undefined) {
-            registry.transitionTo(current.sessionId, "closed");
+            finalizeSuccessfulClose(current.sessionId);
           }
           return;
         }
@@ -311,10 +354,16 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
         spawnReservations.delete(session.sessionId);
       })
       .catch((error: unknown) => {
-        logger.error("Unhandled error while spawning child pane", {
-          sessionId: session.sessionId,
-          error,
-        });
+        if (!taskStarted && kind === "reopen") {
+          logger.warn("reopen enqueue failed because the serialized queue was unavailable", {
+            sessionId: session.sessionId,
+          });
+        } else {
+          logger.error("Unhandled error while spawning child pane", {
+            sessionId: session.sessionId,
+            error,
+          });
+        }
         const current = registry.get(session.sessionId);
         if (current?.state === "spawning" || current?.state === "closing") {
           fail(current.sessionId, "spawn_failed");
@@ -338,9 +387,14 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
         return;
       }
       if (await herdrClient.closePane(childPaneId)) {
-        removeChildPaneId(childPaneId);
-        registry.transitionTo(sessionId, "closed");
+        const reopenRequested = finalizeSuccessfulClose(sessionId, childPaneId);
         logger.info("Child pane closed", { sessionId, paneId: childPaneId });
+        if (reopenRequested) {
+          const reopenableSession = registry.get(sessionId);
+          if (reopenableSession) {
+            void enqueueSpawn(reopenableSession, "reopen");
+          }
+        }
         return;
       }
       if (attempt >= retries) {
@@ -386,8 +440,13 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       // A spawning session may report a pane after deletion. Leave it closing
       // until the queued spawn observes the state and cleans up that pane.
       if (session.state !== "spawning") {
-        // Nothing to clean up, or the only known pane is the caller pane itself.
-        registry.transitionTo(session.sessionId, "closed");
+        const reopenRequested = finalizeSuccessfulClose(session.sessionId);
+        if (reopenRequested) {
+          const reopenableSession = registry.get(session.sessionId);
+          if (reopenableSession) {
+            void enqueueSpawn(reopenableSession, "reopen");
+          }
+        }
       }
       return Promise.resolve();
     }
@@ -396,7 +455,13 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
 
   async function handleSessionCreated(event: Event): Promise<void> {
     const sessionId = resolveSessionId(event);
-    if (!sessionId || registry.has(sessionId)) {
+    if (
+      !sessionId ||
+      registry.has(sessionId) ||
+      ownershipPending.has(sessionId) ||
+      deletedBeforeRegistration.has(sessionId) ||
+      disposed
+    ) {
       return;
     }
     const parsed = sessionCreatedPropertiesSchema.safeParse(event.properties);
@@ -409,24 +474,42 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
 
-    const owned = await ownershipResolver.isOwnedChild({ sessionId, parentId });
-    if (!owned) {
-      pendingSpawnRequests.delete(sessionId);
-      logger.debug("Child session not owned", { sessionId, parentId });
-      return;
-    }
-    const registered = registry.register(sessionId, parentId);
-    if (!registered) {
-      logger.debug("Child session already registered", { sessionId, parentId });
-      return;
-    }
-    logger.info("Child session registered", { sessionId, parentId });
-
-    if (pendingSpawnRequests.delete(sessionId)) {
-      const registeredSession = registry.get(sessionId);
-      if (registeredSession) {
-        await enqueueSpawn(registeredSession, "initial");
+    // Claimed before the await so a delete or duplicate create arriving
+    // while ownership resolves is recorded against the in-flight attempt.
+    ownershipPending.add(sessionId);
+    try {
+      const owned = await ownershipResolver.isOwnedChild({ sessionId, parentId });
+      if (disposed || registry.has(sessionId) || deletedBeforeRegistration.has(sessionId)) {
+        // Tombstones live until dispose: a pre-registration deletion stays
+        // irreversible even for duplicate created events. The dispose and
+        // registry checks keep the tombstone intact for those reasons.
+        if (!disposed && !registry.has(sessionId)) {
+          logger.info("Pre-registration deletion prevented child registration", {
+            sessionId,
+          });
+        }
+        return;
       }
+      if (!owned) {
+        pendingSpawnRequests.delete(sessionId);
+        logger.debug("Child session not owned", { sessionId, parentId });
+        return;
+      }
+      const registered = registry.register(sessionId, parentId);
+      if (!registered) {
+        logger.debug("Child session already registered", { sessionId, parentId });
+        return;
+      }
+      logger.info("Child session registered", { sessionId, parentId });
+
+      if (pendingSpawnRequests.delete(sessionId)) {
+        const registeredSession = registry.get(sessionId);
+        if (registeredSession) {
+          await enqueueSpawn(registeredSession, "initial");
+        }
+      }
+    } finally {
+      ownershipPending.delete(sessionId);
     }
   }
 
@@ -445,6 +528,10 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
     const session = registry.get(sessionId);
     if (!session) {
+      if (deletedBeforeRegistration.has(sessionId)) {
+        // The child was deleted before registration: its work is dead.
+        return;
+      }
       pendingSpawnRequests.add(sessionId);
       return;
     }
@@ -473,7 +560,15 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
         await enqueueSpawn(session, "reopen");
         return;
       }
-      case "closing":
+      case "closing": {
+        // Work during an idle close demands the pane be reopened once the
+        // close finishes; work during a delete close is ignored.
+        if (session.closeReason === "idle" && !session.reopenRequested) {
+          registry.setReopenRequested(sessionId, true);
+          logger.debug("work requested reopen while idle close was in progress", { sessionId });
+        }
+        return;
+      }
       case "closed":
       case "ignored":
       case "failed": {
@@ -488,7 +583,6 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
     await handleWorkSignal(resolveSessionId(event), "meaningful_activity");
   }
-
 
   async function handleSessionStatus(event: Event): Promise<void> {
     const sessionId = resolveSessionId(event);
@@ -522,7 +616,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
 
   /**
    * Grace period elapsed: transition the session to `closing` and close its
-   * pane with bounded retries. `closing -> closed` on success,
+   * pane with bounded retries. `closing -> reopenable` on success,
    * `closing -> failed(close_failed)` when every attempt fails.
    */
   function closeAfterIdleGrace(sessionId: string): void {
@@ -536,10 +630,20 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!registry.transitionTo(sessionId, "closing")) {
       return;
     }
+    // The close reason is decided up front so work and later idle signals can
+    // flip `reopenRequested` while the Herdr close is in flight.
+    registry.setCloseReason(sessionId, "idle");
+    registry.setReopenRequested(sessionId, false);
     const childPaneId = session.paneId;
     if (childPaneId === undefined || childPaneId === paneId) {
       // Nothing to clean up, or the only known pane is the caller pane itself.
-      registry.transitionTo(sessionId, "closed");
+      const reopenRequested = finalizeSuccessfulClose(sessionId);
+      if (reopenRequested) {
+        const reopenableSession = registry.get(sessionId);
+        if (reopenableSession) {
+          void enqueueSpawn(reopenableSession, "reopen");
+        }
+      }
       return;
     }
     void enqueueCloseTask(session, childPaneId, config.closeRetries);
@@ -557,6 +661,15 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (session.state === "spawning") {
       idleDuringSpawn.add(sessionId);
       logger.debug("Child session idle during attach: close deferred", { sessionId });
+      return;
+    }
+    if (session.state === "closing") {
+      // A later idle while the idle close is in flight cancels a pending
+      // reopen demand; idle during a delete close is ignored.
+      if (session.closeReason === "idle" && session.reopenRequested) {
+        registry.setReopenRequested(sessionId, false);
+        logger.debug("later idle cancelled pending reopen", { sessionId });
+      }
       return;
     }
     // Only attached sessions go idle. The transition doubles as the
@@ -582,16 +695,36 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     const session = registry.get(sessionId);
     if (!session) {
       pendingSpawnRequests.delete(sessionId);
+      if (ownershipPending.has(sessionId)) {
+        // The session died while its ownership resolution was in flight:
+        // tombstone it so the resolver outcome can never resurrect it.
+        deletedBeforeRegistration.add(sessionId);
+      }
       return;
     }
     idleDuringSpawn.delete(sessionId);
     // Cancel a pending idle-close timer, if any.
     registry.clearTimer(sessionId);
-    // A rejected transition means the session is already closing/closed or
-    // terminal, which keeps duplicate delete events idempotent.
+    if (session.state === "closing") {
+      // An idle close is already in flight: promote it to a permanent delete
+      // close and let the queued close task observe the new metadata.
+      if (session.closeReason === "idle") {
+        const pendingReopen = session.reopenRequested;
+        registry.setCloseReason(sessionId, "deleted");
+        registry.setReopenRequested(sessionId, false);
+        if (pendingReopen) {
+          logger.debug("pending reopen cancelled because session.deleted arrived", { sessionId });
+        }
+      }
+      return;
+    }
+    // A rejected transition means the session is already terminal, which
+    // keeps duplicate delete events idempotent.
     if (!registry.transitionTo(sessionId, "closing")) {
       return;
     }
+    registry.setCloseReason(sessionId, "deleted");
+    registry.setReopenRequested(sessionId, false);
     await enqueueClose(session);
   }
 
@@ -632,6 +765,10 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       // any newly queued pane work.
       idleDuringSpawn.clear();
       pendingSpawnRequests.clear();
+      // Tombstones and ownership claims exist only for this orchestrator
+      // instance's lifetime; a restart starts with clean bookkeeping.
+      ownershipPending.clear();
+      deletedBeforeRegistration.clear();
       registry.clearAllTimers();
       queue.dispose();
     },

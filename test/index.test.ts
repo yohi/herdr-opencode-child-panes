@@ -159,6 +159,7 @@ describe("herdrChildPanesPlugin", () => {
       sessionId: "ses_child1",
       parentId: "ses_root123",
       state: "waiting_activity",
+      reopenRequested: false,
       createdAt: expect.any(Number),
       updatedAt: expect.any(Number),
     });
