@@ -46,8 +46,7 @@ The maximum number of concurrently managed child panes is controlled by `HERDR_C
 
 - Initial creation requests beyond the limit are recorded as `ignored` with reason `capacity_limit`.
 - Reopen attempts that find capacity full remain in `reopenable`. They do not set `failureReason` and do not transition to `ignored`. A later work signal retries when capacity is available.
-- A `reopenable` session owns no pane and contributes zero to the live capacity count.
-- Capacity is counted from the live pane layout. External pane closures free capacity.
+- Capacity is counted from active registry sessions whose `session.paneId` is defined. `reopenable` sessions have no pane ID and do not count toward capacity.
 - Because mutations are serialized, concurrent events cannot exceed the limit.
 
 ## Retry and failure behavior
@@ -80,7 +79,7 @@ The maximum number of concurrently managed child panes is controlled by `HERDR_C
 | --- | --- |
 | No panes appear | `HERDR_ENV` and `HERDR_PANE_ID` are present; `HERDR_CHILD_PANES` is not disabled. |
 | Pane opens but stays blank | `opencode` is on the `PATH` in the new pane; the OpenCode server is reachable. |
-| Too many panes | `HERDR_CHILD_PANES_MAX` value and current live layout. |
+| Too many panes | `HERDR_CHILD_PANES_MAX` value and active registered sessions with pane IDs. |
 | Idle panes stay open | `HERDR_CHILD_PANES_IDLE_MS`; whether active status keeps resetting the timer. |
 | A closed idle pane does not reopen | Work signal was active status or meaningful activity; capacity was not full; session was not deleted. |
 | Attach logs show no server details | Expected: credentials and query strings are intentionally removed. |

@@ -133,7 +133,7 @@ On `session.created`, the plugin resolves the parent to the caller pane's root s
 - The number of concurrently managed child panes is capped by `HERDR_CHILD_PANES_MAX` (default `4`).
 - A creation request that would exceed the cap transitions the session to `ignored` with reason `capacity_limit`. The child session itself is unaffected; only visualization is skipped.
 - A reopen attempt that would exceed the cap leaves the session in `reopenable`; it does not set `failureReason` and does not transition to `ignored`. A later work signal retries when capacity is available.
-- Capacity is counted from active sessions that own a pane. A `reopenable` session owns no pane and therefore contributes zero to capacity.
+- Capacity is counted from `registry.listActive()` sessions whose `session.paneId` is defined. A `reopenable` session owns no pane and therefore contributes zero to capacity.
 - Creation and close operations are serialized through the internal queue, so concurrent events cannot overshoot the limit.
 
 ## 7. Failure and degradation semantics
