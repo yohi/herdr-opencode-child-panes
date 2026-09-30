@@ -39,7 +39,7 @@ The plugin only acts when it can identify a root OpenCode session hosted by the 
 2. The first real activity event (`message.updated`, `message.part.updated`, or `message.part.delta`) arrives.
 3. The pane orchestrator claims the session (`spawning`), reserves capacity, and enqueues a split/attach operation.
 4. `src/async-queue.ts` serializes the mutation. `src/herdr-client.ts` splits the caller pane to the right and runs `opencode attach <session-id>` in the new pane.
-5. Activity stops and an idle event arrives. The orchestrator transitions the session to `idle_pending` and schedules a close after the configured grace period.
+5. Activity stops and an idle event arrives. The orchestrator transitions the session to `idle_pending` and schedules a close after the configured grace period. (If idle arrives while still `spawning`, deferred close is scheduled upon attach; active status clears this deferred close, while message activity preserves it.)
 6. Active status during the grace period cancels the timer and returns the session to `attached`. Meaningful activity preserves the existing scheduled close.
 7. If the grace period expires, the pane is closed and the session becomes `reopenable`. The same OpenCode child session can later resume work and be visualized again.
 8. `session.deleted` permanently terminates visualization and ends in terminal `closed`.
@@ -48,7 +48,7 @@ The plugin only acts when it can identify a root OpenCode session hosted by the 
 
 - An idle cleanup closes only the managed pane; the underlying OpenCode child session is unaffected.
 - A work signal (active status or meaningful activity) received while the idle close is running records `reopenRequested=true`. When the close finishes, the orchestrator transitions the session to `reopenable` and immediately enqueues a reopen spawn for the same `sessionId`.
-- The reopen spawn is pushed onto the same `AsyncQueue` that handled the close. The close task does not await the reopen task; the queue order guarantees the successor reopen runs after the close settles.
+- The reopen spawn is pushed onto the same `AsyncQueue` that handled the close. The close task does not await the reopen task; the queue order guarantees the successor reopen runs after the close settles without creating a self-deadlock.
 - A later idle signal while the idle close is running clears `reopenRequested`, so the close finishes into `reopenable` with no immediate reopen.
 - `session.deleted` while an idle close is running promotes the close to a permanent delete close. The session ends in `closed`, not `reopenable`.
 
@@ -58,7 +58,7 @@ The plugin only acts when it can identify a root OpenCode session hosted by the 
 
 - A registered session moves through `closing` to terminal `closed`.
 - A `reopenable` session moves through `closing` to terminal `closed`; it cannot be reopened.
-- A session deleted while its ownership resolution is still pending is tombstoned so the resolver outcome can never register or spawn a pane for it.
+- A session deleted while its ownership resolution is still pending is tombstoned until orchestrator disposal so the resolver outcome can never register or spawn a pane for it, and late work or duplicate `session.created` events cannot resurrect it.
 
 ## Relationship to OMO
 
