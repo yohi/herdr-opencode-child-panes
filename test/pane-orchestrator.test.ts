@@ -1772,14 +1772,15 @@ describe("createPaneOrchestrator", () => {
 
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
       expect(fixture.registry.get(CHILD_ID)?.paneId).toBeUndefined();
-      // The old pane position was retired: the reopen split must not target it.
-      expect(fixture.splitPane).not.toHaveBeenCalledWith(
-        expect.objectContaining({ paneId: NEW_PANE_ID }),
-      );
 
       await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
 
       expect(fixture.splitPane).toHaveBeenCalledTimes(2);
+      // The old pane position was retired: the reopen split targets the caller pane.
+      expect(fixture.splitPane).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ paneId: CALLER_PANE_ID }),
+      );
       expect(fixture.attach).toHaveBeenCalledWith(expect.objectContaining({ sessionId: CHILD_ID }));
       expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
     });
