@@ -4,15 +4,20 @@ export type ChildSessionState =
   | "attached"
   | "idle_pending"
   | "closing"
+  | "reopenable"
   | "closed"
   | "ignored"
   | "failed";
+
+export type ChildSessionCloseReason = "idle" | "deleted";
 
 export interface ChildSession {
   readonly sessionId: string;
   readonly parentId: string;
   readonly state: ChildSessionState;
   readonly paneId?: string;
+  readonly closeReason?: ChildSessionCloseReason;
+  readonly reopenRequested: boolean;
   readonly failureReason?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -25,6 +30,10 @@ export interface ChildSessionRegistry {
   isTrackedDescendant(sessionId: string): boolean;
   transitionTo(sessionId: string, state: ChildSessionState): boolean;
   setPaneId(sessionId: string, paneId: string): void;
+  clearPaneId(sessionId: string): void;
+  setCloseReason(sessionId: string, reason: ChildSessionCloseReason): void;
+  setReopenRequested(sessionId: string, requested: boolean): void;
+  clearCloseMetadata(sessionId: string): void;
   setFailureReason(sessionId: string, reason: string): void;
   listActive(): readonly ChildSession[];
   listByState(state: ChildSessionState): readonly ChildSession[];
@@ -45,7 +54,8 @@ export const CHILD_SESSION_TRANSITIONS: Readonly<
   spawning: ["attached", "closing", "failed"],
   attached: ["idle_pending", "closing", "failed"],
   idle_pending: ["attached", "closing", "failed"],
-  closing: ["closed", "failed"],
+  closing: ["reopenable", "closed", "failed"],
+  reopenable: ["spawning", "closing"],
   closed: [],
   ignored: [],
   failed: [],

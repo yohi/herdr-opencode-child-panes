@@ -22,7 +22,7 @@
 - Reopened panes attach the same child `sessionId` and use the existing split/rebalance layout; old pane position is not restored.
 - No recovery is added for split failure, attach failure, close failure, initially ignored sessions, or failed sessions.
 - No new runtime dependency, OpenCode HTTP API call, OMO-private API dependency, or configuration variable is introduced.
-- Every implementation task follows RED -> failure confirmation -> minimum GREEN -> GREEN confirmation -> commit.
+- Every implementation task follows RED -> failure confirmation -> minimum GREEN -> GREEN confirmation -> staged changes. Do not commit unless the user explicitly authorizes the commit; until then, leave changes staged and summarize the diff.
 - Do not update release-managed `CHANGELOG.md` manually.
 
 ## Review Focus
@@ -33,7 +33,7 @@ These are the highest-risk conditions implied by the Design. Each is pinned to a
 2. **Both idle signal shapes during `closing(idle)`:** Task 4 tests both `session.idle` and `session.status=idle` cancelling pending reopen demand.
 3. **Defensive `message.part.delta` reopen path:** Task 2 tests that a `reopenable` child reopens on `message.part.delta` even though that event is outside the current SDK union.
 4. **Duplicate creation around ownership resolution and deletion:** Task 6 tests duplicate `session.created` while ownership is pending and after a deletion tombstone; neither may create a second resolver/spawn path.
-5. **Immediate reopen demand when capacity is unavailable:** Task 5 tests that the post-close handoff performs no split, leaves the child `reopenable`, records no failure, and can be retried by a later work signal.
+5. **Reopen capacity shortage remains retryable:** Task 3 tests that a full-capacity reopen attempt performs no split, leaves the child `reopenable`, records no failure, and can be retried by a later work signal.
 
 ## File Structure
 
@@ -154,12 +154,16 @@ npm run typecheck
 
 Expected: both commands PASS.
 
-- [ ] **Step 5: Commit Task 1**
+- [ ] **Step 5: Stage Task 1 changes**
+
+Stage the changed files. If the user has explicitly authorized a commit, run:
 
 ```bash
 git add src/child-session.ts src/child-session-registry.ts test/child-session-registry.test.ts
 git commit -m "feat: add reopenable child session lifecycle"
 ```
+
+If no commit authorization has been given, run only `git add ...` and report the staged changes without committing.
 
 ---
 
@@ -200,9 +204,32 @@ it("reopens a reopenable child on active status using the same session ID", asyn
   expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
 });
 
+it("reopens a reopenable child on message.updated", async () => {
+  // stage reopenable, send messageUpdatedEvent
+  expect(fixture.attach).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: CHILD_ID }),
+  );
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+});
+
+it("reopens a reopenable child on message.part.updated", async () => {
+  // stage reopenable, send messagePartUpdatedEvent
+  expect(fixture.attach).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: CHILD_ID }),
+  );
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+});
+
 it("reopens a reopenable child on message.part.delta", async () => {
   // stage reopenable, send deltaActivityEvent
   expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+});
+
+it("creates exactly one pane when active status and meaningful activity arrive while reopenable", async () => {
+  // stage reopenable, send status active then message.updated rapidly
+  expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+  expect(fixture.attach).toHaveBeenCalledTimes(1);
   expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
 });
 
@@ -262,13 +289,16 @@ npm run typecheck
 
 Expected: both commands PASS; specifically the existing meaningful-activity-after-idle-during-attach regression remains green.
 
-- [ ] **Step 5: Commit Task 2**
+- [ ] **Step 5: Stage Task 2 changes**
+
+Stage the changed files. If the user has explicitly authorized a commit, run:
 
 ```bash
 git add src/pane-orchestrator.ts test/pane-orchestrator.test.ts
 git commit -m "feat: route reopen work signals by lifecycle state"
 ```
 
+If no commit authorization has been given, run only `git add ...` and report the staged changes without committing.
 ---
 
 ### Task 3: Split Initial and Reopen Capacity Semantics
@@ -374,12 +404,16 @@ npm run typecheck
 
 Expected: all commands PASS; existing initial capacity tests remain unchanged.
 
-- [ ] **Step 5: Commit Task 3**
+- [ ] **Step 5: Stage Task 3 changes**
+
+Stage the changed files. If the user has explicitly authorized a commit, run:
 
 ```bash
 git add src/pane-orchestrator.ts test/pane-orchestrator.test.ts
 git commit -m "feat: keep reopen capacity shortages retryable"
 ```
+
+If no commit authorization has been given, run only `git add ...` and report the staged changes without committing.
 
 ---
 
@@ -441,6 +475,26 @@ it("promotes an idle close to permanent deletion", async () => {
   releaseClose(true);
   await vi.waitFor(() => expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed"));
 });
+
+it("closes a reopenable session permanently when session.deleted arrives with no pane", async () => {
+  // Reach reopenable through a real idle close so there is no live pane.
+  await attachChild(fixture);
+  await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+  expect(fixture.registry.get(CHILD_ID)?.paneId).toBeUndefined();
+
+  await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+  expect(fixture.registry.get(CHILD_ID)?.closeReason).toBeUndefined();
+
+  // Later work must not reopen a deleted session.
+  await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+  await fixture.orchestrator.handleEvent(messageUpdatedEvent(CHILD_ID));
+  expect(fixture.splitPane).toHaveBeenCalledTimes(1); // only the initial split
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
+});
 ```
 
 Add a race test where work/idle/delete arrive while the `closePane()` promise is unresolved, so close success must reread current metadata rather than use a stale pre-await session object.
@@ -453,6 +507,8 @@ it("uses the final reopen demand after an idle close retry", async () => {
   // First closePane attempt returns false, entering retry backoff.
   // During backoff: work -> true, idle -> false, work -> true.
   // The second closePane mock records the registry demand immediately before returning true.
+  // In Task 4, finalizeSuccessfulClose snapshots reopenRequested and transitions to reopenable.
+  // The close task leaves the session reopenable; reopenRequested is consumed and reset to false.
   demandSeenBySuccessfulRetry.push(
     fixture.registry.get(CHILD_ID)?.reopenRequested ?? false,
   );
@@ -460,10 +516,32 @@ it("uses the final reopen demand after an idle close retry", async () => {
   expect(fixture.closePane).toHaveBeenCalledTimes(2);
   expect(demandSeenBySuccessfulRetry).toEqual([true]);
   expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+  expect(fixture.registry.get(CHILD_ID)?.reopenRequested).toBe(false); // consumed by finalizer
 });
 ```
 
-Add the inverse retry case (work -> idle before the successful retry) and assert the successful retry observes `reopenRequested=false`. Task 5's work-idle-work handoff test then proves that a final true value produces exactly one reopen after the close task settles.
+Add the inverse retry case (work -> idle before the successful retry) and assert the successful retry observes `reopenRequested=false`. In Task 4 this leaves the session `reopenable` with no immediate handoff. Task 5 will update this test to assert the final post-handoff state (attached when the final demand is true, reopenable when false).
+
+Add a test equivalent to:
+
+```ts
+it("does not reopen when close retries are exhausted while reopen was requested", async () => {
+  // Initial attach already occurred; clear mocks so we count only post-close reopen attempts.
+  fixture.splitPane.mockClear();
+  fixture.attach.mockClear();
+  // Hold closePane in flight and latch reopenRequested=true.
+  // Exhaust close retries; each retry attempt reads the current reopenRequested.
+  // Final state is failed(close_failed), reopen demand and close metadata are cleared.
+  expect(fixture.registry.get(CHILD_ID)).toMatchObject({
+    state: "failed",
+    failureReason: "close_failed",
+    reopenRequested: false,
+  });
+  expect(fixture.registry.get(CHILD_ID)?.closeReason).toBeUndefined();
+  expect(fixture.splitPane).not.toHaveBeenCalled();
+  expect(fixture.attach).not.toHaveBeenCalled();
+});
+```
 
 Add focused logger assertions for these Design §15 decisions:
 
@@ -545,12 +623,16 @@ npm run typecheck
 
 Expected: all Task 4 tests PASS; no test yet requires an immediate successor reopen from a true snapshot.
 
-- [ ] **Step 5: Commit Task 4**
+- [ ] **Step 5: Stage Task 4 changes**
+
+Stage the changed files. If the user has explicitly authorized a commit, run:
 
 ```bash
 git add src/pane-orchestrator.ts test/pane-orchestrator.test.ts
 git commit -m "feat: preserve idle close intent for child reopen"
 ```
+
+If no commit authorization has been given, run only `git add ...` and report the staged changes without committing.
 
 ---
 
@@ -605,6 +687,58 @@ it("does not immediately reopen when the final closing signal is idle", async ()
   expect(reopenSplitCount).toBe(0);
   expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
 });
+
+it("hands an idle close to a reopen on meaningful activity without awaiting the successor queue task", async () => {
+  // closing -> message.updated -> close success -> reopen split
+  expect(fixture.splitPane).toHaveBeenCalledTimes(2); // initial + reopen
+  expect(fixture.attach).toHaveBeenCalledTimes(2);
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+});
+
+it("reopens through the actual idle close path when work arrives after close completes", async () => {
+  // Let the real idle close complete so paneId is cleared and childPaneIds is updated.
+  await attachChild(fixture);
+  await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+  expect(fixture.registry.get(CHILD_ID)?.paneId).toBeUndefined();
+  expect(fixture.childPaneIds).not.toContain(OLD_PANE_ID);
+
+  await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+
+  expect(fixture.splitPane).toHaveBeenCalledTimes(2); // initial + reopen
+  expect(fixture.attach).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: CHILD_ID }),
+  );
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+  expect(fixture.registry.get(CHILD_ID)?.paneId).toBe(NEW_PANE_ID);
+});
+
+it("reopens a reopenable child on message.updated after actual idle close", async () => {
+  await attachChild(fixture);
+  await fixture.orchestrator.handleEvent(idleEvent(CHILD_ID));
+  await vi.advanceTimersByTimeAsync(1000);
+
+  await fixture.orchestrator.handleEvent(messageUpdatedEvent(CHILD_ID));
+
+  expect(fixture.attach).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: CHILD_ID }),
+  );
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+});
+
+it("stays reopenable after a close retry when the final demand is false", async () => {
+  // closing -> work -> idle -> first closePane false -> second closePane true
+  // The finalizer returns false; no handoff occurs.
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+});
+
+it("reopens after a close retry when the final demand is true", async () => {
+  // closing -> work -> idle -> work -> first closePane false -> second closePane true
+  // The finalizer returns true; the non-awaiting handoff enqueues the reopen spawn.
+  expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+});
 ```
 
 - [ ] **Step 2: Add failing queue-disposal and reopen-layout tests**
@@ -615,8 +749,9 @@ Add:
 it("fails a claimed reopen cleanly when queue disposal rejects the successor enqueue", async () => {
   // close task is already running
   // work latches reopen
-  await fixture.orchestrator.dispose();
+  const disposing = fixture.orchestrator.dispose();
   releaseClose(true);
+  await disposing;
 
   await vi.waitFor(() =>
     expect(fixture.registry.get(CHILD_ID)).toMatchObject({
@@ -625,6 +760,15 @@ it("fails a claimed reopen cleanly when queue disposal rejects the successor enq
     }),
   );
   expect(reopenSplitCount).toBe(0);
+  expect(fixture.spawnReservations.has(CHILD_ID)).toBe(false); // reservation released
+  expect(fixture.warn).toHaveBeenCalledWith(
+    "reopen enqueue failed because the serialized queue was unavailable",
+    expect.objectContaining({ sessionId: CHILD_ID }),
+  );
+  // The rejection must be handled by the spawn path and not escape as an unhandled promise rejection.
+  await expect(
+    fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active")),
+  ).resolves.toBeUndefined();
 });
 
 it("reopens using the current live layout rather than the closed pane location", async () => {
@@ -659,9 +803,12 @@ Add:
 ```ts
 it("closes a newly split pane when deletion arrives during a reopen spawn", async () => {
   // Reach reopenable, start reopen with splitPane held in flight.
-  await fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
+  const reopening = fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+  // Issue deletion without awaiting it; the deletion path will wait for the in-flight split.
+  const deletion = fixture.orchestrator.handleEvent(deletedEvent(CHILD_ID));
   releaseReopenSplit("pane-reopen");
-  await reopening;
+  // Wait for both the reopen spawn and the deletion handling to settle.
+  await Promise.all([reopening, deletion]);
 
   expect(fixture.closePane).toHaveBeenCalledWith("pane-reopen");
   expect(fixture.registry.get(CHILD_ID)?.state).toBe("closed");
@@ -733,12 +880,16 @@ npm run typecheck
 
 Expected: all commands PASS; the handoff test completes rather than timing out.
 
-- [ ] **Step 7: Commit Task 5**
+- [ ] **Step 7: Stage Task 5 changes**
+
+Stage the changed files. If the user has explicitly authorized a commit, run:
 
 ```bash
 git add src/pane-orchestrator.ts test/pane-orchestrator.test.ts
 git commit -m "feat: hand idle close off to serialized reopen"
 ```
+
+If no commit authorization has been given, run only `git add ...` and report the staged changes without committing.
 
 ---
 
@@ -803,6 +954,20 @@ it("keeps a pre-registration deletion tombstone until dispose", async () => {
   await fixture.orchestrator.dispose();
   // dispose must clear transient bookkeeping and accept no later events.
 });
+
+it("does not register a child if dispose happens while ownership resolution is pending", async () => {
+  // Start ownership resolution but do not resolve it.
+  const created = fixture.orchestrator.handleEvent(createdEvent(CHILD_ID, PARENT_ID));
+  await ownershipStarted;
+
+  await fixture.orchestrator.dispose();
+  resolveOwnership(true);
+  await created;
+
+  expect(fixture.registry.has(CHILD_ID)).toBe(false);
+  expect(fixture.splitPane).not.toHaveBeenCalled();
+  expect(fixture.attach).not.toHaveBeenCalled();
+});
 ```
 
 - [ ] **Step 3: Run the new tests and confirm RED**
@@ -820,17 +985,18 @@ Expected: the resurrection test FAILS because work can repopulate `pendingSpawnR
 In `createPaneOrchestrator()`, add:
 
 ```ts
+let disposed = false;
 const ownershipPending = new Set<string>();
 const deletedBeforeRegistration = new Set<string>();
 ```
 
 Update `handleSessionCreated()`:
 
-- reject early when `registry.has(sessionId)`, `ownershipPending.has(sessionId)`, or `deletedBeforeRegistration.has(sessionId)`;
+- reject early when `registry.has(sessionId)`, `ownershipPending.has(sessionId)`, `deletedBeforeRegistration.has(sessionId)`, or `disposed` is `true`;
 - after validating a parent candidate and before awaiting ownership, add to `ownershipPending`;
-- after ownership resolves, check `deletedBeforeRegistration` before registration or pending-work replay;
+- after ownership resolves, check `deletedBeforeRegistration` and `disposed` before registration or pending-work replay;
 - always remove the ownership-pending marker when the ownership attempt completes;
-- when tombstoned, delete pending work, do not register, and emit `logger.info("Pre-registration deletion prevented child registration", { sessionId })` after ownership resolution.
+- when tombstoned or disposed, delete pending work, do not register, and emit `logger.info("Pre-registration deletion prevented child registration", { sessionId })` after ownership resolution if the tombstone was the reason.
 
 Update missing-session work handling:
 
@@ -843,7 +1009,7 @@ Update `handleSessionDeleted()` for a missing session:
 - when `ownershipPending.has(sessionId)`, add the deletion tombstone;
 - return without registry registration.
 
-Update `dispose()` to clear all three transient collections.
+Update `dispose()` to set `disposed = true` and clear all three transient collections.
 
 Do not create tombstones for arbitrary unknown session IDs that were never in ownership resolution; the approved scope is the ownership-pending race.
 
@@ -859,12 +1025,16 @@ npm run typecheck
 
 Expected: all commands PASS.
 
-- [ ] **Step 6: Commit Task 6**
+- [ ] **Step 6: Stage Task 6 changes**
+
+Stage the changed files. If the user has explicitly authorized a commit, run:
 
 ```bash
 git add src/pane-orchestrator.ts test/pane-orchestrator.test.ts
 git commit -m "fix: make pre-registration deletion irreversible"
 ```
+
+If no commit authorization has been given, run only `git add ...` and report the staged changes without committing.
 
 ---
 
@@ -950,16 +1120,22 @@ npm run lint
 
 Expected:
 
-- `reopenable` is documented in canonical/architecture/operations docs;
-- English and Japanese user-facing docs describe same-session reopen;
-- lint PASS.
+QM|- `reopenable` is documented in canonical/architecture/operations docs;
+RZ|- English and Japanese user-facing docs describe same-session reopen;
+SH|- lint PASS.
 
-- [ ] **Step 6: Commit Task 7**
+Also run a Japanese-character validation check on `README.ja.md`, `docs/architecture.ja.md`, and `docs/operations.md` to ensure no Han characters outside the accepted Japanese repertoire and no Hangul characters are present.
+
+- [ ] **Step 6: Stage Task 7 changes**
+
+Stage the changed files. If the user has explicitly authorized a commit, run:
 
 ```bash
 git add SPEC.md docs/architecture.md docs/architecture.ja.md docs/operations.md README.md README.ja.md
 git commit -m "docs: document idle-closed child session reopen"
 ```
+
+If no commit authorization has been given, run only `git add ...` and report the staged changes without committing.
 
 ---
 
@@ -1019,12 +1195,14 @@ Run:
 ```bash
 git status --short
 git diff --name-only master...HEAD
+git diff --cached --name-only
 git log --oneline --decorate master..HEAD
 ```
 
 Expected:
 
-- working tree clean;
+ZR|- no uncommitted, unstaged source or documentation changes; all changes are either committed (if the user authorized commits) or fully staged;
+BK|- implementation branch changes are limited to:
 - implementation branch changes are limited to:
   - approved Design and this Plan;
   - `src/child-session.ts`;

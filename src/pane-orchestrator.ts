@@ -20,6 +20,9 @@ const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>([
 ]);
 const ACTIVE_STATUS_TYPES = new Set<string>(["active", "working", "busy", "running", "streaming"]);
 
+type WorkSignalKind = "active_status" | "meaningful_activity";
+type SpawnKind = "initial" | "reopen";
+
 /**
  * Backoff delays between close retries; the last value is reused when more
  * retries are configured than there are entries.
@@ -163,7 +166,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     }
   }
 
-  function reserveSpawn(sessionId: string): boolean {
+  function reserveSpawn(sessionId: string, kind: SpawnKind): boolean {
     if (spawnReservations.has(sessionId)) {
       return true;
     }
@@ -171,6 +174,10 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       .listActive()
       .filter((session) => session.paneId !== undefined).length;
     if (paneCount + spawnReservations.size >= config.maxPanes) {
+      if (kind === "reopen") {
+        logger.warn("Reopen deferred because capacity was full", { sessionId });
+        return false;
+      }
       registry.setFailureReason(sessionId, "capacity_limit");
       registry.transitionTo(sessionId, "ignored");
       logger.warn("Child pane capacity reached", { sessionId });
@@ -202,7 +209,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
    * synchronously at enqueue time, so this only mutates Herdr when the
    * session is still claimed by this spawn.
    */
-  async function runSpawn(sessionId: string): Promise<void> {
+  async function runSpawn(sessionId: string, kind: SpawnKind): Promise<void> {
     const plan = createChildPaneSplitPlan(childPaneIds, paneId);
     const environment = attachLauncher.environment;
     const newPaneId = await herdrClient.splitPane({
@@ -248,8 +255,11 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     registry.setPaneId(sessionId, newPaneId);
     childPaneIds.push(newPaneId);
     registry.transitionTo(sessionId, "attached");
-    logger.info("Child pane attached", { sessionId, paneId: newPaneId });
-
+    if (kind === "reopen") {
+      logger.info("Child reopened and attached", { sessionId, paneId: newPaneId });
+    } else {
+      logger.info("Child pane attached", { sessionId, paneId: newPaneId });
+    }
     for (const resize of plan.resizeTargets) {
       if (await herdrClient.resizePane(resize)) {
         continue;
@@ -277,8 +287,8 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
    * `spawning` transition is the idempotency gate, while the reservation
    * prevents concurrent children from exceeding the pane limit.
    */
-  function enqueueSpawn(session: ChildSession): Promise<void> {
-    if (!reserveSpawn(session.sessionId)) {
+  function enqueueSpawn(session: ChildSession, kind: SpawnKind): Promise<void> {
+    if (!reserveSpawn(session.sessionId, kind)) {
       return Promise.resolve();
     }
     if (!registry.transitionTo(session.sessionId, "spawning")) {
@@ -295,7 +305,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
           }
           return;
         }
-        await runSpawn(current.sessionId);
+        await runSpawn(current.sessionId, kind);
       })
       .finally(() => {
         spawnReservations.delete(session.sessionId);
@@ -415,7 +425,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (pendingSpawnRequests.delete(sessionId)) {
       const registeredSession = registry.get(sessionId);
       if (registeredSession) {
-        await enqueueSpawn(registeredSession);
+        await enqueueSpawn(registeredSession, "initial");
       }
     }
   }
@@ -426,7 +436,10 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     logger.debug("Child session resumed from idle", { sessionId });
   }
 
-  async function resumeOrSpawn(sessionId: string | undefined): Promise<void> {
+  async function handleWorkSignal(
+    sessionId: string | undefined,
+    signalKind: WorkSignalKind,
+  ): Promise<void> {
     if (!sessionId) {
       return;
     }
@@ -435,16 +448,37 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       pendingSpawnRequests.add(sessionId);
       return;
     }
-    if (session.state === "spawning") {
-      idleDuringSpawn.delete(sessionId);
-      return;
-    }
-    if (session.state === "waiting_activity") {
-      await enqueueSpawn(session);
-      return;
-    }
-    if (session.state === "idle_pending") {
-      resumeFromIdlePending(sessionId);
+
+    switch (session.state) {
+      case "waiting_activity": {
+        await enqueueSpawn(session, "initial");
+        return;
+      }
+      case "spawning": {
+        if (signalKind === "active_status") {
+          idleDuringSpawn.delete(sessionId);
+        }
+        return;
+      }
+      case "attached": {
+        return;
+      }
+      case "idle_pending": {
+        if (signalKind === "active_status") {
+          resumeFromIdlePending(sessionId);
+        }
+        return;
+      }
+      case "reopenable": {
+        await enqueueSpawn(session, "reopen");
+        return;
+      }
+      case "closing":
+      case "closed":
+      case "ignored":
+      case "failed": {
+        return;
+      }
     }
   }
 
@@ -452,19 +486,9 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
     if (!MEANINGFUL_ACTIVITY_EVENTS.has(event.type)) {
       return;
     }
-    const sessionId = resolveSessionId(event);
-    if (!sessionId) {
-      return;
-    }
-    const session = registry.get(sessionId);
-    if (!session || session.state !== "waiting_activity") {
-      if (!session) {
-        pendingSpawnRequests.add(sessionId);
-      }
-      return;
-    }
-    await enqueueSpawn(session);
+    await handleWorkSignal(resolveSessionId(event), "meaningful_activity");
   }
+
 
   async function handleSessionStatus(event: Event): Promise<void> {
     const sessionId = resolveSessionId(event);
@@ -476,7 +500,7 @@ export function createPaneOrchestrator(options: CreatePaneOrchestratorOptions): 
       return;
     }
     if (isActiveStatus(parsed.data.status)) {
-      await resumeOrSpawn(sessionId);
+      await handleWorkSignal(sessionId, "active_status");
       return;
     }
     if (isIdleStatus(parsed.data.status)) {

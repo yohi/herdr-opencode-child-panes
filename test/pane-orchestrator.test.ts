@@ -57,7 +57,7 @@ function deletedEvent(sessionId: string): Event {
   return eventWith("session.deleted", { info: { id: sessionId } });
 }
 
-interface Fixture {
+  interface Fixture {
   readonly orchestrator: PaneOrchestrator;
   readonly registry: ChildSessionRegistry;
   readonly getPaneLayout: Mock<HerdrClient["getPaneLayout"]>;
@@ -67,8 +67,10 @@ interface Fixture {
   readonly attach: Mock<AttachLauncher["attach"]>;
   readonly isOwnedChild: Mock<ChildOwnershipResolver["isOwnedChild"]>;
   readonly debug: Mock<Logger["debug"]>;
+  readonly info: Mock<Logger["info"]>;
+  readonly warn: Mock<Logger["warn"]>;
+  readonly error: Mock<Logger["error"]>;
 }
-
 interface FixtureOptions {
   readonly registry?: CreateChildSessionRegistryOptions;
   readonly attachEnvironment?: Readonly<Record<string, string>>;
@@ -127,7 +129,6 @@ function createFixture(
     attachLauncher,
     logger,
   };
-
   return {
     orchestrator: createPaneOrchestrator(orchestratorOptions),
     registry,
@@ -138,6 +139,9 @@ function createFixture(
     attach: attachLauncher.attach as Mock<AttachLauncher["attach"]>,
     isOwnedChild: ownershipResolver.isOwnedChild as Mock<ChildOwnershipResolver["isOwnedChild"]>,
     debug: logger.debug as Mock<Logger["debug"]>,
+    info: logger.info as Mock<Logger["info"]>,
+    warn: logger.warn as Mock<Logger["warn"]>,
+    error: logger.error as Mock<Logger["error"]>,
   };
 }
 
@@ -1124,6 +1128,197 @@ describe("createPaneOrchestrator", () => {
       await Promise.all([firstSpawn, secondSpawn]);
 
       expect(fixture.registry.get(childB)).toMatchObject({
+        state: "ignored",
+        failureReason: "capacity_limit",
+      });
+    });
+  });
+  describe("reopenable work dispatch", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+function stageReopenableWithoutPane(fixture: Fixture, sessionId: string): void {
+      fixture.registry.register(sessionId, PARENT_ID);
+      fixture.registry.transitionTo(sessionId, "spawning");
+      fixture.registry.transitionTo(sessionId, "attached");
+      fixture.registry.transitionTo(sessionId, "idle_pending");
+      fixture.registry.transitionTo(sessionId, "closing");
+      fixture.registry.transitionTo(sessionId, "reopenable");
+      fixture.registry.clearPaneId(sessionId);
+    }
+
+    function messageUpdatedEvent(sessionId: string): Event {
+      return eventWith("message.updated", { info: { sessionID: sessionId } });
+    }
+
+    function messagePartUpdatedEvent(sessionId: string): Event {
+      return eventWith("message.part.updated", { part: { sessionID: sessionId } });
+    }
+
+    it("reopens a reopenable child on active status using the same session ID", async () => {
+      const fixture = createFixture();
+      stageReopenableWithoutPane(fixture, CHILD_ID);
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+
+      expect(fixture.attach).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("reopens a reopenable child on message.updated", async () => {
+      const fixture = createFixture();
+      stageReopenableWithoutPane(fixture, CHILD_ID);
+
+      await fixture.orchestrator.handleEvent(messageUpdatedEvent(CHILD_ID));
+
+      expect(fixture.attach).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("reopens a reopenable child on message.part.updated", async () => {
+      const fixture = createFixture();
+      stageReopenableWithoutPane(fixture, CHILD_ID);
+
+      await fixture.orchestrator.handleEvent(messagePartUpdatedEvent(CHILD_ID));
+
+      expect(fixture.attach).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("reopens a reopenable child on message.part.delta", async () => {
+      const fixture = createFixture();
+      stageReopenableWithoutPane(fixture, CHILD_ID);
+
+      await fixture.orchestrator.handleEvent(deltaActivityEvent(CHILD_ID));
+
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("creates exactly one pane when active status and meaningful activity arrive while reopenable", async () => {
+      const fixture = createFixture();
+      stageReopenableWithoutPane(fixture, CHILD_ID);
+
+      const first = fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      const second = fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      await Promise.all([first, second]);
+
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+      expect(fixture.attach).toHaveBeenCalledTimes(1);
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+    });
+
+    it("clears idleDuringSpawn on active status but not meaningful activity", async () => {
+      const activeFixture = createFixture();
+      const { releaseAttach: releaseActiveAttach, spawning: activeSpawning } =
+        await startDelayedAttachAndIdle(activeFixture);
+      await activeFixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      releaseActiveAttach(true);
+      await activeSpawning;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(activeFixture.closePane).not.toHaveBeenCalled();
+
+      const messageFixture = createFixture();
+      const { releaseAttach: releaseMessageAttach, spawning: messageSpawning } =
+        await startDelayedAttachAndIdle(messageFixture);
+      await messageFixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      releaseMessageAttach(true);
+      await messageSpawning;
+await vi.advanceTimersByTimeAsync(1000);
+expect(messageFixture.closePane).toHaveBeenCalledWith(NEW_PANE_ID);
+});
+});
+
+  describe("reopen capacity", () => {
+    it("keeps a reopenable child retryable when capacity is full", async () => {
+      const fixture = createFixture({ maxPanes: 1
+});
+      fixture.registry.register(CHILD_ID, PARENT_ID);
+      fixture.registry.transitionTo(CHILD_ID, "spawning");
+      fixture.registry.transitionTo(CHILD_ID, "attached");
+      fixture.registry.transitionTo(CHILD_ID, "idle_pending");
+      fixture.registry.transitionTo(CHILD_ID, "closing");
+      fixture.registry.transitionTo(CHILD_ID, "reopenable");
+      fixture.registry.clearPaneId(CHILD_ID);
+      await attachChildById(fixture, "ses_busy");
+      fixture.splitPane.mockClear();
+      fixture.attach.mockClear();
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)).toMatchObject({
+        state: "reopenable",
+        reopenRequested: false,
+      });
+      expect(fixture.registry.get(CHILD_ID)?.failureReason).toBeUndefined();
+      expect(fixture.warn).toHaveBeenCalledWith(
+        "Reopen deferred because capacity was full",
+        expect.objectContaining({ sessionId: CHILD_ID }),
+      );
+    });
+
+    it("retries a capacity-blocked reopen on a later work signal", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      fixture.registry.register(CHILD_ID, PARENT_ID);
+      fixture.registry.transitionTo(CHILD_ID, "spawning");
+      fixture.registry.transitionTo(CHILD_ID, "attached");
+      fixture.registry.transitionTo(CHILD_ID, "idle_pending");
+      fixture.registry.transitionTo(CHILD_ID, "closing");
+      fixture.registry.transitionTo(CHILD_ID, "reopenable");
+      fixture.registry.clearPaneId(CHILD_ID);
+      await attachChildById(fixture, "ses_busy");
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+
+      await fixture.orchestrator.handleEvent(deletedEvent("ses_busy"));
+      fixture.splitPane.mockClear();
+      fixture.attach.mockClear();
+
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("attached");
+      expect(fixture.splitPane).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not split for repeated reopen work while capacity remains full", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      fixture.registry.register(CHILD_ID, PARENT_ID);
+      fixture.registry.transitionTo(CHILD_ID, "spawning");
+      fixture.registry.transitionTo(CHILD_ID, "attached");
+      fixture.registry.transitionTo(CHILD_ID, "idle_pending");
+      fixture.registry.transitionTo(CHILD_ID, "closing");
+      fixture.registry.transitionTo(CHILD_ID, "reopenable");
+      fixture.registry.clearPaneId(CHILD_ID);
+      await attachChildById(fixture, "ses_busy");
+      fixture.splitPane.mockClear();
+
+      await fixture.orchestrator.handleEvent(statusEvent(CHILD_ID, "active"));
+      await fixture.orchestrator.handleEvent(activityEvent(CHILD_ID));
+      await fixture.orchestrator.handleEvent(deltaActivityEvent(CHILD_ID));
+
+      expect(fixture.splitPane).not.toHaveBeenCalled();
+      expect(fixture.registry.get(CHILD_ID)?.state).toBe("reopenable");
+    });
+
+    it("ignores initial capacity shortage with ignored(capacity_limit)", async () => {
+      const fixture = createFixture({ maxPanes: 1 });
+      await attachChild(fixture);
+      await fixture.orchestrator.handleEvent(createdEvent("ses_childB", PARENT_ID));
+      await fixture.orchestrator.handleEvent(activityEvent("ses_childB"));
+
+      expect(fixture.registry.get("ses_childB")).toMatchObject({
         state: "ignored",
         failureReason: "capacity_limit",
       });

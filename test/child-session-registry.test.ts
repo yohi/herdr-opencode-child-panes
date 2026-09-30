@@ -21,6 +21,7 @@ describe("createChildSessionRegistry", () => {
       sessionId: "child-1",
       parentId: "root-1",
       state: "attached",
+      reopenRequested: false,
       createdAt: 100,
       updatedAt: 300,
     });
@@ -37,6 +38,75 @@ describe("createChildSessionRegistry", () => {
     // Then
     expect(transitioned).toBe(false);
     expect(registry.get("child-1")?.state).toBe("waiting_activity");
+  });
+
+  it("supports a reopenable lifecycle while keeping closed terminal", () => {
+    // Given
+    const registry = createChildSessionRegistry();
+    registry.register("child-1", "root-1");
+
+    // Then
+    expect(registry.get("child-1")?.reopenRequested).toBe(false);
+    expect(registry.transitionTo("child-1", "spawning")).toBe(true);
+    expect(registry.transitionTo("child-1", "attached")).toBe(true);
+    expect(registry.transitionTo("child-1", "idle_pending")).toBe(true);
+    expect(registry.transitionTo("child-1", "closing")).toBe(true);
+    expect(registry.transitionTo("child-1", "reopenable")).toBe(true);
+    expect(registry.transitionTo("child-1", "spawning")).toBe(true);
+  });
+
+  it("clears pane ownership and close metadata explicitly", () => {
+    // Given
+    const registry = createChildSessionRegistry();
+    registry.register("child-1", "root-1");
+    registry.setPaneId("child-1", "pane-1");
+    registry.setCloseReason("child-1", "idle");
+    registry.setReopenRequested("child-1", true);
+
+    // When
+    registry.clearPaneId("child-1");
+    registry.clearCloseMetadata("child-1");
+
+    // Then
+    expect(registry.get("child-1")).toMatchObject({ reopenRequested: false });
+    expect(registry.get("child-1")?.paneId).toBeUndefined();
+    expect(registry.get("child-1")?.closeReason).toBeUndefined();
+  });
+
+  it("lists reopenable as non-terminal but keeps closed terminal", () => {
+    // Given
+    const registry = createChildSessionRegistry();
+    registry.register("reopenable", "root-1");
+    registry.register("closed", "root-1");
+    registry.transitionTo("reopenable", "spawning");
+    registry.transitionTo("reopenable", "attached");
+    registry.transitionTo("reopenable", "idle_pending");
+    registry.transitionTo("reopenable", "closing");
+    registry.transitionTo("reopenable", "reopenable");
+    registry.transitionTo("closed", "closing");
+    registry.transitionTo("closed", "closed");
+
+    // When
+    const active = registry.listActive();
+
+    // Then
+    expect(active.map((session) => session.sessionId)).toContain("reopenable");
+    expect(active.map((session) => session.sessionId)).not.toContain("closed");
+  });
+
+  it("rejects closed -> spawning", () => {
+    // Given
+    const registry = createChildSessionRegistry();
+    registry.register("child-1", "root-1");
+    registry.transitionTo("child-1", "closing");
+    registry.transitionTo("child-1", "closed");
+
+    // When
+    const result = registry.transitionTo("child-1", "spawning");
+
+    // Then
+    expect(result).toBe(false);
+    expect(registry.get("child-1")?.state).toBe("closed");
   });
 
   it("makes duplicate child registrations idempotent", () => {
