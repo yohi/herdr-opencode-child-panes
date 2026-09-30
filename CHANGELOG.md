@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/yohi/herdr-opencode-child-panes/compare/v1.0.1...v1.1.0) (2026-09-30)
+
+
+### Features
+
+* add reopenable child session lifecycle ([ca8fbb8](https://github.com/yohi/herdr-opencode-child-panes/commit/ca8fbb841021eda9c7b86d5f4169303cb074c555))
+* idle close後の子セッション再開を実装 ([66287fb](https://github.com/yohi/herdr-opencode-child-panes/commit/66287fb6a3df2283961b5fcd0dfc927843a9c030))
+* keep reopen capacity shortages retryable ([341f1ff](https://github.com/yohi/herdr-opencode-child-panes/commit/341f1ffc25e3a1ad792337063475736643ba12c5))
+* route reopen work signals by lifecycle state ([f80eb02](https://github.com/yohi/herdr-opencode-child-panes/commit/f80eb022d6ae2f285cd9d1727400bb73a6cd0ae3))
+* アイドル終了中の子セッション再開を処理 ([0dc0a63](https://github.com/yohi/herdr-opencode-child-panes/commit/0dc0a63499ccdbe6fd676b663bb5689671284786))
+* 子セッションの再開可能なライフサイクルを追加 ([cc4e027](https://github.com/yohi/herdr-opencode-child-panes/commit/cc4e0279772a132cc336381ad3c483980815cd4f))
+
 ## [1.0.1](https://github.com/yohi/herdr-opencode-child-panes/compare/v1.0.0...v1.0.1) (2026-09-17)
 
 
