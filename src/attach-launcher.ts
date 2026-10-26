@@ -139,8 +139,17 @@ function authEnvironment(env: NodeJS.ProcessEnv = process.env): Readonly<Record<
   return environment;
 }
 
-async function waitForOpenCodePane(herdrClient: HerdrClient, paneId: string): Promise<boolean> {
+async function waitForOpenCodePane(
+  herdrClient: HerdrClient,
+  paneId: string,
+  sessionId: string,
+  mode: "v1" | "v2",
+): Promise<boolean> {
   const pane = await herdrClient.getPane(paneId);
+  if (mode === "v2") {
+    // A generic OpenCode pane is NOT evidence of the expected child session.
+    return pane?.agent_session?.agent === "opencode" && pane.agent_session.value === sessionId;
+  }
   return pane?.agent === "opencode" || pane?.agent_session?.agent === "opencode";
 }
 
@@ -177,7 +186,7 @@ export function createAttachLauncher(options: CreateAttachLauncherOptions): Atta
         return false;
       }
       for (let attempt = 0; attempt < ATTACH_RETRY_ATTEMPTS; attempt += 1) {
-        if (await waitForOpenCodePane(herdrClient, input.paneId)) {
+        if (await waitForOpenCodePane(herdrClient, input.paneId, input.sessionId, mode)) {
           return true;
         }
         if (attempt < ATTACH_RETRY_ATTEMPTS - 1) {

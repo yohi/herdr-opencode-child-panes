@@ -22,7 +22,10 @@ describe("V2 CLI invocation", () => {
   it("never emits URL secrets in debug command, even with a quote in the query", async () => {
     const debug = vi.fn();
     const client: HerdrClient = {
-      getPane: vi.fn().mockResolvedValue({ pane_id: "child", agent: "opencode" }),
+      getPane: vi.fn().mockResolvedValue({
+        pane_id: "child",
+        agent_session: { agent: "opencode", value: "ses_child" },
+      }),
       getPaneLayout: vi.fn(),
       splitPane: vi.fn(),
       resizePane: vi.fn(),
