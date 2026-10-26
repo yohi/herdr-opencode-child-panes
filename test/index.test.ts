@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import pluginModule, { herdrChildPanesPlugin, setupV2 } from "../src/index.js";
 import type { HerdrClient } from "../src/types.js";
 import { createTestPluginHooks } from "../test-support/plugin-harness.js";
 
@@ -29,7 +28,7 @@ function createRootPaneClient(): HerdrClient {
   };
 }
 
-describe("herdrChildPanesPlugin", () => {
+describe("normalized pane orchestration integration", () => {
   const ENV_KEYS = [
     "HERDR_ENV",
     "HERDR_PANE_ID",
@@ -53,99 +52,12 @@ describe("herdrChildPanesPlugin", () => {
     }
   });
 
-  it("exports a V2-only default module while retaining the legacy test helper", () => {
-    expect(pluginModule).toEqual({
-      id: "herdr-opencode-child-panes",
-      setup: setupV2,
-    });
-  });
-
-  it("returns empty hooks when runtime prerequisites are not satisfied", async () => {
-    process.env.HERDR_CHILD_PANES = "false";
-
-    const hooks = await herdrChildPanesPlugin({
-      serverUrl: undefined,
-    } as Parameters<typeof herdrChildPanesPlugin>[0]);
-
-    expect(hooks).toEqual({});
-  });
-  it.each([
-    ["client", { serverUrl: undefined }],
-    ["app", { serverUrl: undefined, client: {} }],
-    ["log", { serverUrl: undefined, client: { app: {} } }],
-  ])("does not throw when %s is absent during debug logging", async (_missing, input) => {
-    process.env.HERDR_CHILD_PANES_DEBUG = "true";
-
-    await expect(
-      herdrChildPanesPlugin(input as Parameters<typeof herdrChildPanesPlugin>[0]),
-    ).resolves.toEqual({});
-  });
-  it("writes the activation log to OpenCode server logs", async () => {
-    const appLog = vi.fn().mockResolvedValue({ data: true });
-    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
-
-    try {
-      await herdrChildPanesPlugin({
-        serverUrl: new URL("https://user:secret@example.test:8443/opencode?token=secret#fragment"),
-        client: { app: { log: appLog } },
-      } as Parameters<typeof herdrChildPanesPlugin>[0]);
-
-      expect(appLog).toHaveBeenCalledWith({
-        body: {
-          service: "herdr-child-panes",
-          level: "info",
-          message: "Herdr child panes plugin active",
-          extra: {
-            paneId: "pane-1",
-            serverUrl: "https://example.test:8443",
-          },
-        },
-      });
-      expect(infoSpy).not.toHaveBeenCalled();
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-  it("sanitizes the server URL in disabled debug logs", async () => {
-    process.env.HERDR_CHILD_PANES = "false";
-    process.env.HERDR_CHILD_PANES_DEBUG = "true";
-    const appLog = vi.fn().mockResolvedValue({ data: true });
-    const serverUrl = "https://user:secret@example.test:8443/opencode?token=secret#fragment";
-
-    await herdrChildPanesPlugin({
-      serverUrl: new URL(serverUrl),
-      client: { app: { log: appLog } },
-    } as Parameters<typeof herdrChildPanesPlugin>[0]);
-
-    expect(appLog).toHaveBeenCalledWith({
-      body: expect.objectContaining({
-        level: "debug",
-        extra: expect.objectContaining({
-          prereqs: expect.objectContaining({
-            serverUrl: "https://example.test:8443",
-          }),
-        }),
-      }),
-    });
-    expect(JSON.stringify(appLog.mock.calls)).not.toContain("secret");
-    expect(JSON.stringify(appLog.mock.calls)).not.toContain("fragment");
-  });
-
   it("ignores session.created events without properties", async () => {
-    const hooks = await herdrChildPanesPlugin({
-      serverUrl: new URL("http://localhost:3000"),
-      client: {
-        app: {
-          log: () => Promise.resolve({ data: true }),
-        },
-      },
-    } as Parameters<typeof herdrChildPanesPlugin>[0]);
-    const malformedEvent = {
-      type: "session.created",
-      properties: undefined,
-    } as unknown as Parameters<NonNullable<typeof hooks.event>>[0]["event"];
-
-    await expect(hooks.event?.({ event: malformedEvent })).resolves.toBeUndefined();
+    const harness = await createTestPluginHooks();
+    await expect(
+      harness.hooks.event?.({ event: { type: "session.created", properties: undefined } }),
+    ).resolves.toBeUndefined();
+    await harness.hooks.dispose?.();
   });
 
   it("registers an owned direct child session created under the root", async () => {

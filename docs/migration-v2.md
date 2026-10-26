@@ -8,7 +8,7 @@
 - Guide: https://gist.github.com/yohi/0c3d8edea98d86e7f5c8d6c2d9f93d2d
 
 ## Changes
-- V1 1.x remains frozen on `support/v1.x`; 2.x default export contains V2 `setup(ctx)`, not V1 `server()`.
+- V1 1.x remains frozen on `support/v1.x`; 2.x default export contains V2 `setup(ctx)` only, with no V1 `server()` or V1 SDK dependency.
 - V2 event subscription uses `ctx.event.subscribe({ signal })`, `event.type` + `event.data`, and idempotent setup cleanup.
 - `session.created` registers an owned child only; `session.execution.started` / `session.step.started` / text/reasoning/tool-start events count as observed activity. Raw `session.status: busy` never creates a pane.
 - V2 `session.status: idle` and deprecated `session.idle` retain grace-close semantics.

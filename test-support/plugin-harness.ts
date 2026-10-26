@@ -1,7 +1,13 @@
+import { createAttachLauncher } from "../src/attach-launcher.js";
 import { createChildSessionRegistry } from "../src/child-session-registry.js";
 import type { ChildSessionRegistry } from "../src/child-session.js";
-import { herdrChildPanesPlugin } from "../src/index.js";
+import { parseConfig } from "../src/config.js";
+import { createLogger } from "../src/logger.js";
+import { createChildOwnershipResolver } from "../src/ownership-resolver.js";
+import { createPaneOrchestrator } from "../src/pane-orchestrator.js";
+import { createRootSessionResolver } from "../src/root-session-resolver.js";
 import type { HerdrClient } from "../src/types.js";
+import type { NormalizedPaneEvent } from "../src/v2-events.js";
 
 export interface PluginHarness {
   readonly registry: ChildSessionRegistry;
@@ -15,6 +21,10 @@ interface HarnessOptions {
   readonly herdrClient?: HerdrClient;
 }
 
+/**
+ * V2 tests keep exercising the already-implemented pane state machine with
+ * normalized event fixtures. This is test-only wiring, NOT a V1 plugin export.
+ */
 export async function createTestPluginHooks(options: HarnessOptions = {}): Promise<PluginHarness> {
   const registry = createChildSessionRegistry();
   const herdrClient: HerdrClient =
@@ -27,19 +37,28 @@ export async function createTestPluginHooks(options: HarnessOptions = {}): Promi
       runInPane: () => Promise.resolve(false),
       closePane: () => Promise.resolve(false),
     } as HerdrClient);
-
-  const hooks = await herdrChildPanesPlugin(
-    {
-      client: {
-        app: {
-          log: () => Promise.resolve({ data: true }),
-        },
-      },
-      serverUrl: new URL("http://localhost:3000"),
-      directory: process.cwd(),
-    } as never,
-    { registry, herdrClient },
-  );
-
-  return { registry, hooks: hooks as unknown as PluginHarness["hooks"] };
+  const paneId = process.env.HERDR_PANE_ID ?? "pane-1";
+  const logger = createLogger(false, () => {});
+  const ownershipResolver = createChildOwnershipResolver({
+    rootSessionResolver: createRootSessionResolver({ paneId, herdrClient }),
+    registry,
+  });
+  const orchestrator = createPaneOrchestrator({
+    paneId,
+    serverUrl: new URL("http://localhost:3000"),
+    directory: process.cwd(),
+    config: parseConfig(),
+    herdrClient,
+    ownershipResolver,
+    registry,
+    attachLauncher: createAttachLauncher({ herdrClient, logger }),
+    logger,
+  });
+  return {
+    registry,
+    hooks: {
+      event: async ({ event }) => orchestrator.handleEvent(event as NormalizedPaneEvent),
+      dispose: async () => orchestrator.dispose(),
+    },
+  };
 }
