@@ -1,5 +1,4 @@
 import type { Plugin } from "@opencode-ai/plugin";
-import { setupV2 } from "./v2-plugin.js";
 import { createAttachLauncher } from "./attach-launcher.js";
 import { createChildSessionRegistry } from "./child-session-registry.js";
 import type { ChildSessionRegistry } from "./child-session.js";
@@ -11,6 +10,7 @@ import { createPaneOrchestrator } from "./pane-orchestrator.js";
 import type { PaneOrchestrator } from "./pane-orchestrator.js";
 import { createRootSessionResolver } from "./root-session-resolver.js";
 import type { HerdrClient, RuntimePrerequisites } from "./types.js";
+import { setupV2 } from "./v2-plugin.js";
 
 export type { HerdrChildPanesConfig, Direction, RuntimePrerequisites } from "./types.js";
 export type { PaneInfo, PaneLayout, SplitPaneInput, HerdrClient } from "./types.js";

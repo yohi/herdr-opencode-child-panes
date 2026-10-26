@@ -2,14 +2,14 @@ import { createAttachLauncher } from "./attach-launcher.js";
 import { createChildSessionRegistry } from "./child-session-registry.js";
 import type { ChildSessionRegistry } from "./child-session.js";
 import { parseConfig } from "./config.js";
-import { normalizeV2Event } from "./v2-events.js";
-import type { V2Event } from "./v2-events.js";
 import { createHerdrClient } from "./herdr-client.js";
 import { createLogger } from "./logger.js";
 import { createChildOwnershipResolver } from "./ownership-resolver.js";
 import { createPaneOrchestrator } from "./pane-orchestrator.js";
 import { createRootSessionResolver } from "./root-session-resolver.js";
 import type { HerdrClient } from "./types.js";
+import { normalizeV2Event } from "./v2-events.js";
+import type { V2Event } from "./v2-events.js";
 
 /**
  * Structural subset of the public @opencode/plugin@2.1.4 Promise API.
@@ -30,9 +30,10 @@ export interface V2PluginDependencies {
 }
 
 function configuredServerUrl(ctx: V2PluginContext): URL | undefined {
-  const raw = ctx.options.serverUrl === undefined
-    ? process.env.HERDR_CHILD_PANES_SERVER_URL
-    : ctx.options.serverUrl;
+  const raw =
+    ctx.options.serverUrl === undefined
+      ? process.env.HERDR_CHILD_PANES_SERVER_URL
+      : ctx.options.serverUrl;
   if (typeof raw !== "string" || raw.trim().length === 0) return undefined;
   try {
     const url = new URL(raw);
@@ -58,7 +59,9 @@ export async function setupV2(
   const serverUrl = configuredServerUrl(ctx);
   if (!serverUrl) {
     // Constant text only: never print malformed URLs, tokens or option values.
-    console.warn("[herdr-child-panes] V2 disabled: configure options.serverUrl or HERDR_CHILD_PANES_SERVER_URL");
+    console.warn(
+      "[herdr-child-panes] V2 disabled: configure options.serverUrl or HERDR_CHILD_PANES_SERVER_URL",
+    );
     return async () => {};
   }
 

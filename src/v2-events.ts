@@ -55,7 +55,8 @@ export function normalizeV2Event(
     if (
       pluginDirectory !== undefined &&
       (typeof location?.directory !== "string" || location.directory !== pluginDirectory)
-    ) return undefined;
+    )
+      return undefined;
     return { type: "session.created", properties: { info: { id, parentID: parent } } };
   }
   if (event.type === "session.deleted") {

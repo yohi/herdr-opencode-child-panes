@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createChildSessionRegistry } from "../src/child-session-registry.js";
 import plugin, { setupV2 } from "../src/index.js";
+import type { HerdrClient } from "../src/types.js";
 import type { V2Event } from "../src/v2-events.js";
 import type { V2PluginContext } from "../src/v2-plugin.js";
-import type { HerdrClient } from "../src/types.js";
-import { createChildSessionRegistry } from "../src/child-session-registry.js";
 
 const directory = "/project";
 const URL_VALUE = "http://localhost:4096";
@@ -37,14 +37,14 @@ describe("V2 dedicated plugin setup", () => {
   beforeEach(() => {
     process.env.HERDR_ENV = "1";
     process.env.HERDR_PANE_ID = "pane-root";
-    delete process.env.HERDR_CHILD_PANES;
-    delete process.env.HERDR_CHILD_PANES_SERVER_URL;
+    Reflect.deleteProperty(process.env, "HERDR_CHILD_PANES");
+    Reflect.deleteProperty(process.env, "HERDR_CHILD_PANES_SERVER_URL");
   });
   afterEach(() => {
-    delete process.env.HERDR_ENV;
-    delete process.env.HERDR_PANE_ID;
-    delete process.env.HERDR_CHILD_PANES;
-    delete process.env.HERDR_CHILD_PANES_SERVER_URL;
+    Reflect.deleteProperty(process.env, "HERDR_ENV");
+    Reflect.deleteProperty(process.env, "HERDR_PANE_ID");
+    Reflect.deleteProperty(process.env, "HERDR_CHILD_PANES");
+    Reflect.deleteProperty(process.env, "HERDR_CHILD_PANES_SERVER_URL");
     vi.restoreAllMocks();
   });
 
@@ -54,7 +54,7 @@ describe("V2 dedicated plugin setup", () => {
   });
 
   it("does not subscribe without Herdr prerequisites", async () => {
-    delete process.env.HERDR_ENV;
+    Reflect.deleteProperty(process.env, "HERDR_ENV");
     const { ctx, subscribeSpy } = context([], URL_VALUE);
     const cleanup = await setupV2(ctx);
     expect(subscribeSpy).not.toHaveBeenCalled();
@@ -92,11 +92,17 @@ describe("V2 dedicated plugin setup", () => {
       }),
       closePane: vi.fn().mockResolvedValue(true),
     };
-    const { ctx, subscribeSpy } = context([
-      { type: "session.created", data: { sessionID: "ses_child", parentID: "ses_root", location: { directory } } },
-      { type: "session.execution.started", data: { sessionID: "ses_child" } },
-      { type: "session.status", data: { sessionID: "ses_child", status: { type: "idle" } } },
-    ], URL_VALUE);
+    const { ctx, subscribeSpy } = context(
+      [
+        {
+          type: "session.created",
+          data: { sessionID: "ses_child", parentID: "ses_root", location: { directory } },
+        },
+        { type: "session.execution.started", data: { sessionID: "ses_child" } },
+        { type: "session.status", data: { sessionID: "ses_child", status: { type: "idle" } } },
+      ],
+      URL_VALUE,
+    );
     const cleanup = await setupV2(ctx, { registry, herdrClient: client });
     await vi.waitFor(() => expect(commands.length).toBe(1));
     expect(subscribeSpy).toHaveBeenCalledTimes(1);
