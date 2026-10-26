@@ -1,4 +1,4 @@
-import type { Event } from "@opencode-ai/sdk";
+import type { NormalizedPaneEvent as Event } from "./v2-events.js";
 import { createAsyncQueue } from "./async-queue.js";
 import type { AttachLauncher } from "./attach-launcher.js";
 import type { ChildSession, ChildSessionRegistry } from "./child-session.js";

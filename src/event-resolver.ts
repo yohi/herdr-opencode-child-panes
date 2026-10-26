@@ -1,4 +1,4 @@
-import type { Event } from "@opencode-ai/sdk";
+import type { NormalizedPaneEvent as Event } from "./v2-events.js";
 import {
   messagePartDeltaPropertiesSchema,
   messagePartUpdatedPropertiesSchema,

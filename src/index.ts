@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { setupV2 } from "./v2-plugin.js";
 import { createAttachLauncher } from "./attach-launcher.js";
 import { createChildSessionRegistry } from "./child-session-registry.js";
 import type { ChildSessionRegistry } from "./child-session.js";
@@ -127,7 +128,11 @@ export const herdrChildPanesPlugin: Plugin = async (
   };
 };
 
+export { setupV2 } from "./v2-plugin.js";
+
+// The 2.x package exposes only the V2 setup entrypoint to the host.
+// The deprecated named V1 function remains temporarily for internal regression fixtures.
 export default {
   id: "herdr-opencode-child-panes",
-  server: herdrChildPanesPlugin,
+  setup: setupV2,
 };

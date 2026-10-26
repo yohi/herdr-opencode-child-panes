@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import pluginModule, { herdrChildPanesPlugin } from "../src/index.js";
+import pluginModule, { herdrChildPanesPlugin, setupV2 } from "../src/index.js";
 import type { HerdrClient } from "../src/types.js";
 import { createTestPluginHooks } from "../test-support/plugin-harness.js";
 
@@ -53,10 +53,10 @@ describe("herdrChildPanesPlugin", () => {
     }
   });
 
-  it("exports the server module as the default and the plugin function as a named export", () => {
+  it("exports a V2-only default module while retaining the legacy test helper", () => {
     expect(pluginModule).toEqual({
       id: "herdr-opencode-child-panes",
-      server: herdrChildPanesPlugin,
+      setup: setupV2,
     });
   });
 
