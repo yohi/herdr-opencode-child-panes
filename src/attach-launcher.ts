@@ -198,9 +198,8 @@ export function createAttachLauncher(options: CreateAttachLauncherOptions): Atta
         sessionId: input.sessionId,
       });
       return false;
-    } catch (error) {
+    } catch {
       // Do not expose a failed process message that may contain the URL or credentials.
-      void error;
       logger.error("Attach command failed unexpectedly", {
         paneId: input.paneId,
         sessionId: input.sessionId,

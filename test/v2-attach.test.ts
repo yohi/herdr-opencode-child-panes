@@ -10,12 +10,12 @@ describe("V2 CLI invocation", () => {
           paneId: "pane-2",
           sessionId: "ses_x' ; touch /tmp/fail",
           serverUrl: new URL("https://user:pass@example.test:3333"),
-          directory: "/tmp/work tree",
+          directory: "work tree",
         },
         "v2",
       ),
     ).toBe(
-      "opencode '/tmp/work tree' --server 'https://example.test:3333/' --session 'ses_x'\\'' ; touch /tmp/fail'",
+      "opencode 'work tree' --server 'https://example.test:3333/' --session 'ses_x'\\'' ; touch /tmp/fail'",
     );
   });
 
@@ -40,7 +40,7 @@ describe("V2 CLI invocation", () => {
     await launcher.attach({
       paneId: "child",
       sessionId: "ses_child",
-      directory: "/tmp/project",
+      directory: "project",
       serverUrl: new URL(
         "https://user:password@example.test/path?token=secret%27query#secretfragment",
       ),

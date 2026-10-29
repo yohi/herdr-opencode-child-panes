@@ -63,7 +63,7 @@ Once the plugin is installed, use OpenCode normally inside a Herdr pane. For exa
 Use a subagent to summarize README.md.
 ```
 
-When the subagent starts, a new pane appears to the right and runs `opencode attach <child-session-id>`. The main pane keeps focus. If the subagent goes idle, its pane closes, but the session itself keeps running. If the same subagent resumes work, the plugin creates a fresh pane attached to the same session. When the subagent is deleted, its visualization ends permanently.
+When the subagent starts, a new pane appears to the right and runs `opencode <directory> --server <server-url> --session <child-session-id>` on OpenCode V2.1.4+. The main pane keeps focus. If the subagent goes idle, its pane closes, but the session itself keeps running. If the same subagent resumes work, the plugin creates a fresh pane attached to the same session. When the subagent is deleted, its visualization ends permanently.
 
 ## Configuration
 
