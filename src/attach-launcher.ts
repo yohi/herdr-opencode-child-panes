@@ -20,6 +20,7 @@ export interface CreateAttachLauncherOptions {
   readonly herdrClient: HerdrClient;
   readonly logger?: Logger;
   readonly env?: NodeJS.ProcessEnv;
+  readonly mode?: "v1" | "v2";
 }
 
 export interface AttachLauncher {
@@ -53,8 +54,11 @@ function stripUrlQueryAndFragment(url: string): string | undefined {
   }
 }
 
-export function buildAttachCommand(input: AttachInput): string {
+export function buildAttachCommand(input: AttachInput, mode: "v1" | "v2" = "v1"): string {
   const url = stripCredentials(input.serverUrl);
+  if (mode === "v2") {
+    return `opencode ${quoteShell(input.directory)} --server ${quoteShell(url)} --session ${quoteShell(input.sessionId)}`;
+  }
   return `opencode attach ${quoteShell(url)} --session ${quoteShell(input.sessionId)} --dir ${quoteShell(input.directory)}`;
 }
 
@@ -103,12 +107,14 @@ export function redactAttachCommand(command: string): string {
   }
 
   const attachMarker = "opencode attach ";
+  const v2Marker = " --server ";
   const markerStart = redacted.indexOf(attachMarker);
-  if (markerStart < 0) {
+  const v2Start = redacted.indexOf(v2Marker);
+  if (markerStart < 0 && v2Start < 0) {
     return redacted;
   }
 
-  const urlStart = markerStart + attachMarker.length;
+  const urlStart = markerStart >= 0 ? markerStart + attachMarker.length : v2Start + v2Marker.length;
   const urlEnd = shellWordEnd(redacted, urlStart);
   const shellUrl = redacted.slice(urlStart, urlEnd);
   if (!shellUrl.startsWith("'") || !shellUrl.endsWith("'")) {
@@ -133,8 +139,17 @@ function authEnvironment(env: NodeJS.ProcessEnv = process.env): Readonly<Record<
   return environment;
 }
 
-async function waitForOpenCodePane(herdrClient: HerdrClient, paneId: string): Promise<boolean> {
+async function waitForOpenCodePane(
+  herdrClient: HerdrClient,
+  paneId: string,
+  sessionId: string,
+  mode: "v1" | "v2",
+): Promise<boolean> {
   const pane = await herdrClient.getPane(paneId);
+  if (mode === "v2") {
+    // A generic OpenCode pane is NOT evidence of the expected child session.
+    return pane?.agent_session?.agent === "opencode" && pane.agent_session.value === sessionId;
+  }
   return pane?.agent === "opencode" || pane?.agent_session?.agent === "opencode";
 }
 
@@ -142,14 +157,23 @@ export function createAttachLauncher(options: CreateAttachLauncherOptions): Atta
   const herdrClient = options.herdrClient;
   const logger = options.logger ?? noopLogger;
   const env = options.env ?? process.env;
+  const mode = options.mode ?? "v1";
   const environment = authEnvironment(env);
 
   async function launch(input: AttachInput): Promise<boolean> {
-    const command = buildAttachCommand(input);
+    const command = buildAttachCommand(input, mode);
+    // Build a fresh redacted command instead of parsing shell-escaped URL text.
+    // URLs containing quotes must not bypass query/fragment redaction.
+    const safeLogUrl = new URL(input.serverUrl.toString());
+    safeLogUrl.username = "";
+    safeLogUrl.password = "";
+    safeLogUrl.search = "";
+    safeLogUrl.hash = "";
+    const safeLogCommand = buildAttachCommand({ ...input, serverUrl: safeLogUrl }, mode);
     logger.debug("Attaching OpenCode session to pane", {
       paneId: input.paneId,
       sessionId: input.sessionId,
-      command: redactAttachCommand(command),
+      command: safeLogCommand,
     });
 
     try {
@@ -162,7 +186,7 @@ export function createAttachLauncher(options: CreateAttachLauncherOptions): Atta
         return false;
       }
       for (let attempt = 0; attempt < ATTACH_RETRY_ATTEMPTS; attempt += 1) {
-        if (await waitForOpenCodePane(herdrClient, input.paneId)) {
+        if (await waitForOpenCodePane(herdrClient, input.paneId, input.sessionId, mode)) {
           return true;
         }
         if (attempt < ATTACH_RETRY_ATTEMPTS - 1) {
@@ -174,12 +198,11 @@ export function createAttachLauncher(options: CreateAttachLauncherOptions): Atta
         sessionId: input.sessionId,
       });
       return false;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "unknown error";
+    } catch {
+      // Do not expose a failed process message that may contain the URL or credentials.
       logger.error("Attach command failed unexpectedly", {
         paneId: input.paneId,
         sessionId: input.sessionId,
-        detail,
       });
       return false;
     }

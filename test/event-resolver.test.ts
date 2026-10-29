@@ -1,6 +1,6 @@
-import type { Event } from "@opencode-ai/sdk";
 import { describe, expect, it } from "vitest";
 import { resolveSessionId } from "../src/event-resolver.js";
+import type { NormalizedPaneEvent as Event } from "../src/v2-events.js";
 
 function eventWith<T>(type: string, properties: T): Event {
   return { type, properties } as unknown as Event;

@@ -1,4 +1,3 @@
-import type { Event } from "@opencode-ai/sdk";
 import { createAsyncQueue } from "./async-queue.js";
 import type { AttachLauncher } from "./attach-launcher.js";
 import type { ChildSession, ChildSessionRegistry } from "./child-session.js";
@@ -12,6 +11,7 @@ import type {
   PaneLayoutDirection,
   ResizePaneInput,
 } from "./types.js";
+import type { NormalizedPaneEvent as Event } from "./v2-events.js";
 
 const MEANINGFUL_ACTIVITY_EVENTS = new Set<string>([
   "message.updated",

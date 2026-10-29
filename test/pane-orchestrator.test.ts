@@ -1,4 +1,3 @@
-import type { Event } from "@opencode-ai/sdk";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttachLauncher } from "../src/attach-launcher.js";
@@ -15,6 +14,7 @@ import {
   createPaneOrchestrator,
 } from "../src/pane-orchestrator.js";
 import type { HerdrChildPanesConfig, HerdrClient } from "../src/types.js";
+import type { NormalizedPaneEvent as Event } from "../src/v2-events.js";
 
 const SERVER_URL = new URL("http://localhost:3000");
 const CALLER_PANE_ID = "pane-1";

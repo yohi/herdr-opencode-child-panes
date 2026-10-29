@@ -4,11 +4,11 @@ Repository-specific instructions for AI agents working on `herdr-opencode-child-
 
 ## Project Overview
 
-`herdr-opencode-child-panes` is an OpenCode companion plugin that visualizes accepted child sessions (subagents) as Herdr split panes using `@opencode-ai/plugin` hooks and the `herdr` CLI.
+`herdr-opencode-child-panes` is an OpenCode companion plugin that visualizes accepted child sessions (subagents) as Herdr split panes using OpenCode V2.1.4+ Promise event subscription and the `herdr` CLI.
 
 - **Runtime**: Node.js >= 20 (ESM)
 - **Package Manager**: npm
-- **Tech Stack**: TypeScript, `@opencode-ai/plugin`, `herdr` CLI, `zod`
+- **Tech Stack**: TypeScript, OpenCode v2 Promise API (structural subset), `herdr` CLI, `zod`
 - **Toolchain**: `tsup` (build to `dist/`), `vitest` (tests), `biome` (linter/formatter), `tsc` (typecheck)
 
 ## Progressive Disclosure (Documentation Map)
@@ -21,6 +21,12 @@ Keep this file concise to conserve the agent instruction budget. Consult topic-s
 - [docs/operations.md](docs/operations.md): Operational runbook, semantic lifecycle logs, and troubleshooting checklists.
 - [docs/getting-started.md](docs/getting-started.md): Installation prerequisites and verification steps.
 - [README.md](README.md) / [README.ja.md](README.ja.md): User-facing entry point and high-level feature overview.
+
+## Major-version contract
+
+- `master`: OpenCode V2.1.4+ only; `support/v1.x`: V1 maintained independently.
+- Keep V1 fixes on the support branch; do not reintroduce V1 runtime entrypoints in the v2 default export.
+- V2 host tests and Herdr attach proof are mandatory before publishing v2.0.0.
 
 ## Mandatory Verification Gates
 

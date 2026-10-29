@@ -1,4 +1,3 @@
-import type { Event } from "@opencode-ai/sdk";
 import {
   messagePartDeltaPropertiesSchema,
   messagePartUpdatedPropertiesSchema,
@@ -8,6 +7,7 @@ import {
   sessionIdlePropertiesSchema,
   sessionStatusPropertiesSchema,
 } from "./schemas.js";
+import type { NormalizedPaneEvent as Event } from "./v2-events.js";
 
 export type ResolvedSessionId = string | undefined;
 
