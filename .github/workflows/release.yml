@@ -26,12 +26,52 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      prs_created: ${{ steps.release.outputs.prs_created }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
-      - uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c # v4
+      - uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5 # v4
         id: release
         with:
           release-type: node
           target-branch: master
+
+  # release-please が package.json を再シリアライズすると biome のフォーマットと競合する
+  # ため、リリース PR ブランチ上で整形済みの状態に保つ。
+  format-release-pr:
+    needs: release-please
+    if: >-
+      ${{ github.event_name == 'push' && needs.release-please.outputs.prs_created == 'true' }}
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ fromJSON(needs.release-please.outputs.pr).headBranchName }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Normalize release metadata
+        run: npx --no-install biome format --write package.json
+
+      - name: Commit formatting fix
+        run: |
+          if git diff --quiet; then
+            echo "package.json is already formatted; nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "chore(release): format package.json"
+          git push
 
   publish:
     needs: release-please
