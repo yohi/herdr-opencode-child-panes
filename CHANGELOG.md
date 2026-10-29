@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.0.0](https://github.com/yohi/herdr-opencode-child-panes/compare/v1.1.0...v2.0.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* start OpenCode V2.1.4 major-version migration on isolated branch
+
+### Features
+
+* start OpenCode V2.1.4 major-version migration on isolated branch ([902a789](https://github.com/yohi/herdr-opencode-child-panes/commit/902a789a33c36210788e9054d09bd3c33aa4ab75))
+
+
+### Bug Fixes
+
+* **v2:** require the expected child session attribution before accepting pane attach ([1149fe3](https://github.com/yohi/herdr-opencode-child-panes/commit/1149fe30f9cd01401a0c126b27d25351f14e4dd1))
+* V2起動例と相対パスを修正 ([f476721](https://github.com/yohi/herdr-opencode-child-panes/commit/f476721e3cfb3ab923961f219f23c135c1157f51))
+
 ## [1.1.0](https://github.com/yohi/herdr-opencode-child-panes/compare/v1.0.1...v1.1.0) (2026-09-30)
 
 
