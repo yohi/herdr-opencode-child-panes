@@ -16,6 +16,6 @@
     "lineWidth": 100
   },
   "files": {
-    "ignore": ["node_modules", "dist", ".nexus", ".omo", ".justice", ".git"]
+    "ignore": ["node_modules", "dist", ".nexus", ".omo", ".justice", ".worktrees", ".git"]
   }
 }
